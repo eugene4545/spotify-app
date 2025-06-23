@@ -1,0 +1,130 @@
+import { useState, useEffect } from 'react';
+import axios from 'axios';
+import SetupSection from './components/SetupSection';
+import AuthSection from './components/AuthSection';
+import PlaylistBrowser from './components/PlaylistBrowser';
+import PlaylistDetails from './components/PlaylistDetails';
+import TrackSelector from './components/TrackSelector';
+import DownloadSettings from './components/DownloadSettings';
+import ProgressSection from './components/ProgressSection';
+
+// Configure Axios
+axios.defaults.baseURL = '/api';
+
+function App() {
+  const [appState, setAppState] = useState<'setup' | 'auth' | 'main'>('setup');
+  const [credentialsSet, setCredentialsSet] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [selectedPlaylist, setSelectedPlaylist] = useState<any>(null);
+  const [showTracks, setShowTracks] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<any>({});
+
+  // Check initial state
+  useEffect(() => {
+    const checkInitialState = async () => {
+      try {
+        const { data } = await axios.get('/are-credentials-set');
+        setCredentialsSet(data.credentials_set);
+        
+        if (data.credentials_set) {
+          const authRes = await axios.get('/is-authenticated');
+          setAuthenticated(authRes.data.authenticated);
+          setAppState(authRes.data.authenticated ? 'main' : 'auth');
+        } else {
+          setAppState('setup');
+        }
+      } catch (error) {
+        console.error('Error checking initial state:', error);
+      }
+    };
+
+    checkInitialState();
+    
+    // Start progress polling
+    const interval = setInterval(async () => {
+      try {
+        const { data } = await axios.get('/progress');
+        setDownloadProgress(data);
+      } catch (error) {
+        console.error('Error fetching progress:', error);
+      }
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="container mx-auto px-4 py-8 max-w-4xl">
+      <header className="text-center mb-8">
+        <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-spotify-green to-green-400 bg-clip-text text-transparent">
+          Spotify Playlist Downloader
+        </h1>
+        <p className="text-gray-400">
+          Download your favorite Spotify playlists for offline listening
+        </p>
+      </header>
+
+      {appState === 'setup' && (
+        <SetupSection 
+          onCredentialsSaved={() => setAppState('auth')} 
+        />
+      )}
+
+      {appState === 'auth' && (
+        <AuthSection 
+          onAuthenticated={() => {
+            setAuthenticated(true);
+            setAppState('main');
+          }} 
+        />
+      )}
+
+      {appState === 'main' && (
+        <div className="space-y-6">
+          <PlaylistBrowser 
+            onSelectPlaylist={setSelectedPlaylist} 
+          />
+          
+          {selectedPlaylist && (
+            <PlaylistDetails 
+              playlist={selectedPlaylist} 
+              onShowTracks={() => setShowTracks(true)} 
+            />
+          )}
+          
+          {selectedPlaylist && !showTracks && (
+            <DownloadSettings 
+              playlist={selectedPlaylist} 
+              onStartDownload={() => {
+                axios.post('/download', { url: selectedPlaylist.url });
+              }}
+            />
+          )}
+          
+          {showTracks && selectedPlaylist && (
+            <TrackSelector 
+              playlist={selectedPlaylist}
+              onClose={() => setShowTracks(false)}
+              onDownloadSelected={(trackIds) => {
+                axios.post('/download', {
+                  url: selectedPlaylist.url,
+                  track_ids: trackIds
+                });
+              }}
+            />
+          )}
+          
+          {downloadProgress.status && downloadProgress.status !== 'idle' && (
+            <ProgressSection 
+              progress={downloadProgress}
+              onStopDownload={() => axios.get('/stop-download')}
+              onOpenFolder={() => axios.get('/open-download-folder')}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;
