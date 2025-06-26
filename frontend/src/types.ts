@@ -19,11 +19,25 @@ export interface Track {
 }
 
 // Progress type used in ProgressSection
+export type ProgressStatus = 
+  | 'idle' 
+  | 'starting' 
+  | 'downloading' 
+  | 'completed' 
+  | 'cancelled' 
+  | 'error';
+
 export interface ProgressData {
   current: number;
   total: number;
-  status: 'idle' | 'starting' | 'downloading' | 'completed' | 'cancelled' | 'error';
+  status: ProgressStatus;
   current_track?: string;
   successful?: number;
+  error?: string;
+}
+
+export interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
   error?: string;
 }

@@ -1,13 +1,22 @@
 # backend/main.py
-from fastapi import FastAPI, Request, HTTPException, Query
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List  # Add this import
+from typing import Optional, List
 from spotify_api import SpotifyDownloaderAPI
+import spotipy
 import uvicorn
+import asyncio
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 app = FastAPI()
 api = SpotifyDownloaderAPI()
+
+# Create authentication event
+auth_event = asyncio.Event()
 
 # CORS Configuration
 origins = ["http://localhost:5173"]
@@ -31,7 +40,7 @@ class DownloadRequest(BaseModel):
     url: str
     track_ids: Optional[List[str]] = None
 
-# API Endpoints
+# API Endpoints - Note: /api prefix is handled by frontend proxy
 @app.get("/api/are-credentials-set")
 def are_credentials_set():
     return api.are_credentials_set()
@@ -79,6 +88,31 @@ def get_download_path():
 def set_download_path(path: str):
     return api.set_download_path(path)
 
+@app.get("/api/stop-download")
+def stop_download():
+    return api.stop_download()
+
+@app.get("/api/open-download-folder")
+def open_download_folder():
+    import os
+    import subprocess
+    import platform
+    
+    try:
+        download_path = api.get_download_path()["path"]
+        
+        # Open folder based on OS
+        if platform.system() == "Windows":
+            os.startfile(download_path)
+        elif platform.system() == "Darwin":  # macOS
+            subprocess.run(["open", download_path])
+        else:  # Linux
+            subprocess.run(["xdg-open", download_path])
+            
+        return {"success": True, "message": "Folder opened"}
+    except Exception as e:
+        return {"error": str(e)}
+
 # Spotify Callback Handler
 @app.get("/callback")
 async def spotify_callback(request: Request):
@@ -86,11 +120,23 @@ async def spotify_callback(request: Request):
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code")
     
-    # Pass the code to the API to complete authentication
-    api.auth_code = code
-    api.auth_event.set()
-    
-    return {"status": "success", "message": "Authentication successful"}
+    try:
+        token_info = api.sp_oauth.get_access_token(code)
+        api.sp = spotipy.Spotify(auth=token_info['access_token'])
+        auth_event.set()  # Signal authentication complete
+        return {"status": "success", "message": "Authentication successful"}
+    except Exception as e:
+        logging.error(f"Authentication error: {e}")
+        return {"status": "error", "message": str(e)}
+
+# New authentication check endpoint
+@app.get("/api/check-auth")
+async def check_auth():
+    try:
+        await asyncio.wait_for(auth_event.wait(), timeout=120)
+        return {"authenticated": True}
+    except asyncio.TimeoutError:
+        return {"authenticated": False}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)

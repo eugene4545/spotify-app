@@ -14,7 +14,7 @@ const AuthSection = ({ onAuthenticated }: { onAuthenticated: () => void }) => {
         success: boolean;
         auth_url?: string;
         error?: string;
-      }>("/start-auth");
+      }>("/start-auth"); // Removed /api prefix since it's already in baseURL
 
       if (response.data.success && response.data.auth_url) {
         window.open(response.data.auth_url, "_blank", "width=600,height=800");
@@ -23,7 +23,7 @@ const AuthSection = ({ onAuthenticated }: { onAuthenticated: () => void }) => {
           try {
             const authRes = await axios.get<{
               authenticated: boolean;
-            }>("/is-authenticated");
+            }>("/is-authenticated"); // FIXED: Removed /api prefix
 
             if (authRes.data.authenticated) {
               clearInterval(pollInterval);
@@ -42,14 +42,25 @@ const AuthSection = ({ onAuthenticated }: { onAuthenticated: () => void }) => {
             console.error(errorMessage);
           }
         }, 2000);
+
+        // Add a timeout to stop polling after 2 minutes
+        setTimeout(() => {
+          clearInterval(pollInterval);
+          if (isLoading) {
+            setIsLoading(false);
+            setError("Authentication timed out. Please try again.");
+          }
+        }, 120000);
+        
       } else {
         setError(response.data.error || "Authentication failed");
       }
-    } catch (caughtError) {  // Changed variable name to caughtError
+    } catch (caughtError) {
       let errorMessage = "Authentication error: ";
 
       if (axios.isAxiosError(caughtError)) {
-        errorMessage += caughtError.response?.data?.error || caughtError.message;
+        errorMessage +=
+          caughtError.response?.data?.error || caughtError.message;
       } else if (caughtError instanceof Error) {
         errorMessage += caughtError.message;
       } else {
