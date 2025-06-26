@@ -13,7 +13,7 @@ const DownloadSettings = ({
     const fetchDownloadPath = async () => {
       try {
         setError(null);
-        const response = await axios.get<{ path: string }>("/download-path");
+        const response = await axios.get<{ path: string }>("/api/download-path");
         setDownloadPath(response.data.path);
       } catch (caughtError) {
         let errorMessage = "Error fetching download path: ";
@@ -37,13 +37,13 @@ const DownloadSettings = ({
   const handleBrowse = async () => {
     try {
       setError(null);
-      const response = await axios.post<{ path: string }>("/browse-folder");
+      const response = await axios.post<{ path: string }>("/api/browse-folder");
       
       if (response.data.path) {
         setDownloadPath(response.data.path);
         
         // Set the new download path on the server
-        await axios.post("/set-download-path", { path: response.data.path });
+        await axios.post("/api/set-download-path", { path: response.data.path });
       }
     } catch (caughtError) {
       let errorMessage = "Error browsing folder: ";

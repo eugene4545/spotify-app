@@ -18,10 +18,10 @@ const PlaylistBrowser = ({
       try {
         setIsLoading(true);
         const response = await axios.get<{
-  success: boolean;
-  playlists?: Playlist[];
-  error?: string;
-}>("/playlists");
+          success: boolean;
+          playlists?: Playlist[];
+          error?: string;
+        }>("/playlists");
 
         if (response.data.success && response.data.playlists) {
           setPlaylists(response.data.playlists);
@@ -29,12 +29,13 @@ const PlaylistBrowser = ({
         } else {
           setError(response.data.error || "Error loading playlists");
         }
-       } catch (caughtError) {
+      } catch (caughtError) {
         let errorMessage = "Error loading playlists: ";
-        
+
         if (axios.isAxiosError(caughtError)) {
           // Handle Axios-specific errors
-          errorMessage += caughtError.response?.data?.error || caughtError.message;
+          errorMessage +=
+            caughtError.response?.data?.error || caughtError.message;
         } else if (caughtError instanceof Error) {
           // Handle standard JavaScript errors
           errorMessage += caughtError.message;
@@ -42,7 +43,7 @@ const PlaylistBrowser = ({
           // Handle unknown error types
           errorMessage += "Unknown error occurred";
         }
-        
+
         setError(errorMessage);
       } finally {
         setIsLoading(false);
@@ -51,7 +52,6 @@ const PlaylistBrowser = ({
 
     fetchPlaylists();
   }, []);
-
 
   useEffect(() => {
     if (!searchTerm) {

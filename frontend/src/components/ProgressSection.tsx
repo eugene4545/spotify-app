@@ -1,37 +1,35 @@
-import type { ProgressData } from "../types";
+import type { ProgressData, ProgressStatus } from "../types";
 
-const ProgressSection = ({ 
-  progress, 
+const ProgressSection = ({
+  progress,
   onStopDownload,
-  onOpenFolder
-}: { 
-  progress: ProgressData; 
+  onOpenFolder,
+}: {
+  progress: ProgressData;
   onStopDownload: () => void;
   onOpenFolder: () => void;
 }) => {
-  const percentage = progress.total > 0 
-    ? (progress.current / progress.total) * 100 
-    : 0;
-  
-  let statusText = progress.status;
-  
-  switch (progress.status) {
-    case 'starting':
-      statusText = 'Preparing download...';
-      break;
-    case 'downloading':
-      statusText = 'Downloading tracks...';
-      break;
-    case 'completed':
-      statusText = `Completed! ${progress.successful || progress.current} tracks downloaded.`;
-      break;
-    case 'cancelled':
-      statusText = 'Download cancelled';
-      break;
-    case 'error':
-      statusText = `Download error: ${progress.error || 'Unknown error'}`;
-      break;
-  }
+  const percentage = progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
+
+  const getStatusText = (status: ProgressStatus) => {
+    switch (status) {
+      case "starting":
+        return "Preparing download...";
+      case "downloading":
+        return "Downloading tracks...";
+      case "completed":
+        return `Completed! ${progress.successful || progress.current} tracks downloaded.`;
+      case "cancelled":
+        return "Download cancelled";
+      case "error":
+        return `Download error: ${progress.error || "Unknown error"}`;
+      case "idle":
+      default:
+        return "Ready to download";
+    }
+  };
+
+  const statusText = getStatusText(progress.status);
 
   return (
     <div className="bg-gray-800 rounded-lg p-6">
@@ -40,22 +38,24 @@ const ProgressSection = ({
         <div>
           <div className="flex justify-between text-sm mb-2">
             <span>{statusText}</span>
-            <span>{progress.current}/{progress.total}</span>
+            <span>
+              {progress.current}/{progress.total}
+            </span>
           </div>
           <div className="w-full bg-gray-700 rounded-full h-2">
-            <div 
-              className="bg-spotify-green h-2 rounded-full transition-all duration-300" 
+            <div
+              className="bg-spotify-green h-2 rounded-full transition-all duration-300"
               style={{ width: `${percentage}%` }}
             ></div>
           </div>
         </div>
-        
+
         {progress.current_track && (
           <div className="text-sm text-gray-400">
             Downloading: {progress.current_track}
           </div>
         )}
-        
+
         <div className="flex gap-3">
           <button
             onClick={onStopDownload}

@@ -1,18 +1,14 @@
 import os
+from dotenv import load_dotenv
 import re
-import json
 import threading
-import time
 import urllib.parse
 import urllib.request
 import string
 from pathlib import Path
 from typing import Dict, List, Optional
-import requests
-from dotenv import load_dotenv, set_key
 import spotipy
 from spotipy import SpotifyOAuth
-from spotipy.oauth2 import SpotifyOauthError
 from yt_dlp import YoutubeDL
 import logging
 
@@ -21,171 +17,151 @@ class DownloadInterrupted(Exception):
 
 class SpotifyDownloaderAPI:
     def __init__(self):
-        # Initialize attributes first
         self.client_id = None
         self.client_secret = None
         self.redirect_uri = "http://127.0.0.1:8000/callback"
         self.credentials_set = False
         
-        # Load environment variables
         self.env_path = '.env'
         self._check_credentials()
         
-        # Now set up Spotify auth if credentials are available
+        # Initialize these as None first
+        self.sp_oauth = None
+        self.sp = None
+        
+        # Set up Spotify auth if credentials are available
         if self.credentials_set:
             self._setup_spotify_auth()
         
-        # Initialize other attributes
-        self.sp_oauth = None
-        self.sp = None
         self.is_downloading = False
         self.download_progress = {"current": 0, "total": 0, "status": "idle"}
         self.download_path = str(Path.home() / "Downloads" / "Spotify_Downloads")
-        self.auth_code = None
-        self.auth_event = threading.Event()
 
     def _check_credentials(self):
-        """Check if credentials are set in .env file"""
+        """Check if credentials exist and are valid"""
         if not os.path.exists(self.env_path):
             self.credentials_set = False
             return
             
-        # Load environment variables
         load_dotenv(self.env_path)
         
-        # Get credentials
         self.client_id = os.getenv("CLIENT_ID")
         self.client_secret = os.getenv("CLIENT_SECRET")
-        self.redirect_uri = os.getenv("REDIRECT_URL", "http://localhost:8000/callback")
         
-        # Check if credentials are valid
-        if self.client_id and self.client_secret and \
-           "your_spotify_client_id_here" not in self.client_id and \
-           "your_spotify_client_secret_here" not in self.client_secret:
+        # Check if credentials are set and not placeholder values
+        if (self.client_id and self.client_secret and 
+            self.client_id.strip() and self.client_secret.strip() and
+            "your_spotify_client_id_here" not in self.client_id and 
+            "your_spotify_client_secret_here" not in self.client_secret):
             self.credentials_set = True
+            logging.info("Valid Spotify credentials found")
         else:
             self.credentials_set = False
+            logging.warning("No valid Spotify credentials found")
 
     def save_credentials(self, client_id: str, client_secret: str):
-        """Save credentials to .env file"""
+        """Save Spotify credentials to .env file"""
         try:
-            # Create or update .env file
-            set_key(self.env_path, "CLIENT_ID", client_id)
-            set_key(self.env_path, "CLIENT_SECRET", client_secret)
-            set_key(self.env_path, "REDIRECT_URL", "http://localhost:8000/callback")
+            # Validate inputs
+            if not client_id or not client_secret:
+                return {"error": "Client ID and Client Secret are required"}
+            
+            if not client_id.strip() or not client_secret.strip():
+                return {"error": "Client ID and Client Secret cannot be empty"}
+            
+            # Create .env file if it doesn't exist
+            if not os.path.exists(self.env_path):
+                with open(self.env_path, 'w') as f:
+                    f.write("")
+            
+            # Update .env file
+            from dotenv import set_key
+            set_key(self.env_path, "CLIENT_ID", client_id.strip())
+            set_key(self.env_path, "CLIENT_SECRET", client_secret.strip())
             
             # Reload environment variables
-            load_dotenv(self.env_path)
-            self.client_id = client_id
-            self.client_secret = client_secret
-            self.redirect_uri = "http://localhost:8000/callback"
+            load_dotenv(self.env_path, override=True)
+            
+            # Update instance variables
+            self.client_id = client_id.strip()
+            self.client_secret = client_secret.strip()
             self.credentials_set = True
             
-            # Initialize Spotify auth
+            # Setup Spotify OAuth
             self._setup_spotify_auth()
             
+            logging.info("Credentials saved and Spotify OAuth initialized")
             return {"success": True, "message": "Credentials saved successfully!"}
+            
         except Exception as e:
             logging.error(f"Error saving credentials: {e}")
-            return {"error": str(e)}
+            return {"error": f"Failed to save credentials: {str(e)}"}
             
     def are_credentials_set(self):
-        """Check if credentials are configured"""
+        """Check if credentials are properly set"""
         return {"credentials_set": self.credentials_set}
         
     def start_auth_flow(self):
-        """Start authentication flow with automatic code capture"""
+        """Start the Spotify authentication flow"""
+        if not self.credentials_set:
+            return {"error": "Spotify credentials not set. Please set them first."}
+        
         if not self.sp_oauth:
-            return {"error": "Spotify OAuth not initialized"}
-        
-        # Generate auth URL
-        auth_url = self.sp_oauth.get_authorize_url()
-        
-        # Start HTTP server in background
-        self.auth_code = None
-        self.auth_event.clear()
-        self.server_thread = threading.Thread(target=self.run_auth_server)
-        self.server_thread.daemon = True
-        self.server_thread.start()
-        
-        # Open auth URL in browser
-        self.open_url(auth_url)
-        
-        # Wait for auth code or timeout
-        self.auth_event.wait(timeout=120)
-        
-        if self.auth_code:
-            try:
-                token_info = self.sp_oauth.get_access_token(self.auth_code)
-                self.sp = spotipy.Spotify(auth=token_info['access_token'])
-                return {"success": True, "message": "Authentication successful"}
-            except Exception as e:
-                logging.error(f"Authentication error: {e}")
-                return {"error": str(e)}
-        else:
-            return {"error": "Authentication timed out"}
-
-    def run_auth_server(self):
-        """Run HTTP server to capture auth callback"""
-        # Create reference to outer self for inner class
-        outer_self = self
-        
-        class CallbackHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path.startswith('/callback'):
-                    query = urllib.parse.urlparse(self.path).query
-                    params = urllib.parse.parse_qs(query)
-                    code = params.get('code', [None])[0]
-                    
-                    if code:
-                        self.send_response(200)
-                        self.send_header('Content-type', 'text/html')
-                        self.end_headers()
-                        self.wfile.write(b'<h1>Authentication Successful</h1><p>You can close this window</p>')
-                        # Set auth code on outer class instance
-                        outer_self.auth_code = code
-                        outer_self.auth_event.set()
-                    else:
-                        self.send_error(400, "Missing authorization code")
-                else:
-                    self.send_error(404)
+            logging.warning("Spotify OAuth not initialized, attempting to initialize...")
+            self._setup_spotify_auth()
             
-            def log_message(self, format, *args):
-                # Disable logging
-                return
+        if not self.sp_oauth:
+            return {"error": "Failed to initialize Spotify OAuth. Please check your credentials."}
         
-        # Create and start server on port 8000
-        server = HTTPServer(('localhost', 8000), CallbackHandler)
-        server.timeout = 120
-        server.handle_request()
-
+        try:
+            auth_url = self.sp_oauth.get_authorize_url()
+            logging.info(f"Generated auth URL: {auth_url}")
+            return {"success": True, "auth_url": auth_url}
+        except Exception as e:
+            logging.error(f"Error generating auth URL: {e}")
+            return {"error": f"Failed to generate auth URL: {str(e)}"}
 
     def _setup_spotify_auth(self):
-        """Setup Spotify authentication"""
+        """Setup Spotify OAuth client"""
         try:
             if not self.client_id or not self.client_secret:
-                raise ValueError("Spotify credentials not found in .env file")
+                raise ValueError("Client ID and Client Secret are required")
+            
+            if not self.credentials_set:
+                raise ValueError("Credentials not properly set")
                 
+            # Create SpotifyOAuth instance
             self.sp_oauth = SpotifyOAuth(
                 client_id=self.client_id,
                 client_secret=self.client_secret,
                 redirect_uri=self.redirect_uri,
                 scope="user-library-read playlist-read-private playlist-read-collaborative",
-                cache_path=".spotify_cache"
+                cache_path=".spotify_cache",
+                show_dialog=True  # Force showing the auth dialog
             )
             
-            # Try to get cached token
+            # Check if there's a cached token
             token_info = self.sp_oauth.get_cached_token()
-            if token_info:
+            if token_info and not self.sp_oauth.is_token_expired(token_info):
                 self.sp = spotipy.Spotify(auth=token_info['access_token'])
+                logging.info("Using cached Spotify token")
+            else:
+                logging.info("No valid cached token found")
                 
+            logging.info("Spotify OAuth setup completed successfully")
+            
         except Exception as e:
             logging.error(f"Spotify OAuth setup error: {e}")
+            self.sp_oauth = None
+            self.sp = None
+            raise
             
     def is_authenticated(self):
-        """Check if user is authenticated"""
-        return {"authenticated": self.sp is not None}
-        
+        """Check if user is authenticated with Spotify"""
+        is_auth = self.sp is not None
+        logging.info(f"Authentication check: {is_auth}")
+        return {"authenticated": is_auth}
+
     def extract_playlist_id(self, playlist_url: str) -> Optional[str]:
         """Extract playlist ID from Spotify URL"""
         patterns = [
@@ -289,17 +265,8 @@ class SpotifyDownloaderAPI:
                     "url": playlist['external_urls']['spotify']
                 })
                 
-            return {"success": True, "playlists": [
-                {
-                    "id": playlist['id'],
-                    "name": playlist['name'],
-                    "owner": playlist['owner']['display_name'],
-                    "track_count": playlist['tracks']['total'],
-                    "image": playlist['images'][0]['url'] if playlist['images'] else None,
-                    "url": playlist['external_urls']['spotify']
-                }
-                for playlist in playlists
-            ]}
+            return {"success": True, "playlists": formatted_playlists}
+            
         except Exception as e:
             logging.error(f"Error getting user playlists: {e}")
             return {"error": str(e)}
@@ -398,7 +365,6 @@ class SpotifyDownloaderAPI:
         else:
             return {"error": "Download already in progress"}
 
-    
     def download_track(self, track_info: Dict, download_folder: str) -> bool:
         try:
             track = track_info['track']
@@ -429,14 +395,12 @@ class SpotifyDownloaderAPI:
                 logging.warning(f"No YouTube videos found for: {sanitized_name}")
                 return False
                 
-            # ADDED: Check if download should stop before starting
             if not self.is_downloading:
                 return False
                 
             # Try downloading from YouTube with improved options
             for video_id in video_ids[:3]:  # Try first 3 results
                 try:
-                    # ADDED: Check if download should stop before each attempt
                     if not self.is_downloading:
                         return False
                         
@@ -457,8 +421,8 @@ class SpotifyDownloaderAPI:
                         'extract_flat': False,
                         'writethumbnail': False,
                         'writeinfojson': False,
-                        'cookiefile': None,  # Remove cookies for now
-                        'timeout': 30,  # ADDED: Timeout to prevent hanging
+                        'cookiefile': None,
+                        'timeout': 30,
                         'extractor_args': {
                             'youtube': {
                                 'player_client': ['android', 'web'],
@@ -468,12 +432,10 @@ class SpotifyDownloaderAPI:
                         'http_headers': {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                         },
-                        # ADDED: Progress hook for instant cancellation
                         'progress_hooks': [self._create_progress_hook()]
                     }
                     
                     with YoutubeDL(ydl_opts) as ydl:
-                        # ADDED: Check if download should stop before starting download
                         if not self.is_downloading:
                             return False
                         ydl.download([video_url])
@@ -565,4 +527,3 @@ class SpotifyDownloaderAPI:
     def get_download_progress(self):
         """Get current download progress"""
         return self.download_progress
-        

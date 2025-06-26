@@ -8,19 +8,39 @@ const SetupSection = ({ onCredentialsSaved }: { onCredentialsSaved: () => void }
 
   const handleSave = async () => {
     try {
-      const response = await axios.post('/save-credentials', {
+      const response = await axios.post<{
+        success: boolean;
+        message?: string;
+        error?: string;
+      }>('/api/save-credentials', {
         client_id: clientId,
         client_secret: clientSecret
       });
       
       if (response.data.success) {
-        setMessage({ text: response.data.message, type: 'success' });
+        setMessage({ text: response.data.message || 'Credentials saved successfully!', type: 'success' });
         setTimeout(onCredentialsSaved, 1500);
       } else {
-        setMessage({ text: response.data.error, type: 'error' });
+        setMessage({ 
+          text: response.data.error || 'Authentication failed', 
+          type: 'error' 
+        });
       }
-    } catch (error: any) {
-      setMessage({ text: error.message || 'Error saving credentials', type: 'error' });
+    } catch (caughtError) {
+      let errorMessage = 'Error saving credentials: ';
+      
+      if (axios.isAxiosError(caughtError)) {
+        // Handle Axios-specific errors
+        errorMessage += caughtError.response?.data?.error || caughtError.message;
+      } else if (caughtError instanceof Error) {
+        // Handle standard JavaScript errors
+        errorMessage += caughtError.message;
+      } else {
+        // Handle unknown error types
+        errorMessage += 'Unknown error occurred';
+      }
+      
+      setMessage({ text: errorMessage, type: 'error' });
     }
   };
 
