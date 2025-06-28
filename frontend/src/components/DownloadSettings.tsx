@@ -13,7 +13,7 @@ const DownloadSettings = ({
     const fetchDownloadPath = async () => {
       try {
         setError(null);
-        const response = await axios.get<{ path: string }>("/api/download-path");
+        const response = await axios.get<{ path: string }>("/download-path");
         setDownloadPath(response.data.path);
       } catch (caughtError) {
         let errorMessage = "Error fetching download path: ";

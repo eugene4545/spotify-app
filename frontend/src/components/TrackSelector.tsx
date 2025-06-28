@@ -24,7 +24,7 @@ const TrackSelector = ({
           success: boolean;
           tracks?: Track[];
           error?: string;
-        }>("/api/playlist-tracks", {
+        }>("/playlist-tracks", {
           url: playlist.url,
         });
 
