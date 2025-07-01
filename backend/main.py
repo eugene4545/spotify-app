@@ -1,6 +1,8 @@
 # backend/main.py
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import tkinter as tk
+from tkinter import filedialog
 from pydantic import BaseModel
 from typing import Optional, List
 from spotify_api import SpotifyDownloaderAPI
@@ -8,6 +10,9 @@ import spotipy
 import uvicorn
 import asyncio
 import logging
+import os  # Added missing import
+import platform
+import subprocess
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -86,7 +91,22 @@ def get_download_path():
 
 @app.post("/api/set-download-path")
 def set_download_path(path: str):
-    return api.set_download_path(path)
+    if not path:
+        return {"error": "No path provided"}
+    
+    try:
+        # Expand home directory if needed
+        expanded_path = os.path.expanduser(path)
+        
+        # Create the directory if it doesn't exist
+        os.makedirs(expanded_path, exist_ok=True)
+        
+        # Set and return the path
+        api.set_download_path(expanded_path)
+        return {"success": True, "path": expanded_path}
+    except Exception as e:
+        logging.error(f"Error setting download path: {e}")
+        return {"error": f"Invalid path: {str(e)}"}
 
 @app.get("/api/stop-download")
 def stop_download():

@@ -1,6 +1,13 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 
+// Define an interface for the extended input element
+interface DirectoryInputElement extends HTMLInputElement {
+  webkitdirectory: boolean;
+  mozdirectory: boolean;
+  directory: boolean;
+}
+
 const DownloadSettings = ({
   onStartDownload,
 }: {
@@ -17,15 +24,16 @@ const DownloadSettings = ({
         setDownloadPath(response.data.path);
       } catch (caughtError) {
         let errorMessage = "Error fetching download path: ";
-        
+
         if (axios.isAxiosError(caughtError)) {
-          errorMessage += caughtError.response?.data?.error || caughtError.message;
+          errorMessage +=
+            caughtError.response?.data?.error || caughtError.message;
         } else if (caughtError instanceof Error) {
           errorMessage += caughtError.message;
         } else {
           errorMessage += "Unknown error occurred";
         }
-        
+
         setError(errorMessage);
         console.error(errorMessage);
       }
@@ -36,41 +44,56 @@ const DownloadSettings = ({
 
   const handleBrowse = async () => {
     try {
-      setError(null);
-      const response = await axios.post<{ path: string }>("/api/browse-folder");
+      // Create a hidden file input element with proper typing
+      const input = document.createElement("input") as DirectoryInputElement;
+      input.type = "file";
       
-      if (response.data.path) {
-        setDownloadPath(response.data.path);
+      // Set directory attributes with proper typing
+      input.webkitdirectory = true;
+      input.mozdirectory = true;
+      input.directory = true;
+
+      // Handle folder selection
+      input.onchange = async () => {
+        const files = input.files;
         
-        // Set the new download path on the server
-        await axios.post("/api/set-download-path", { path: response.data.path });
-      }
-    } catch (caughtError) {
-      let errorMessage = "Error browsing folder: ";
-      
-      if (axios.isAxiosError(caughtError)) {
-        errorMessage += caughtError.response?.data?.error || caughtError.message;
-      } else if (caughtError instanceof Error) {
-        errorMessage += caughtError.message;
-      } else {
-        errorMessage += "Unknown error occurred";
-      }
-      
-      setError(errorMessage);
-      console.error(errorMessage);
+        // Proper null/undefined check with length validation
+        if (files && files.length > 0) {
+          // The folder path is the path of the first file
+          const folderPath = files[0].webkitRelativePath.split("/")[0];
+
+          try {
+            // Send the selected path to the backend
+            const response = await axios.post("/api/set-download-path", {
+              path: folderPath,
+            });
+
+            if (response.data.success) {
+              setDownloadPath(response.data.path);
+            } else {
+              setError(response.data.error || "Failed to set download path");
+            }
+          } catch (error) {
+            setError("Failed to set download path");
+            console.error("Error setting download path:", error);
+          }
+        }
+      };
+
+      // Trigger the folder picker
+      input.click();
+    } catch (error) {
+      setError("Your browser does not support folder selection");
+      console.error("Folder selection error:", error);
     }
   };
 
   return (
     <div className="bg-gray-800 rounded-lg p-6">
       <h2 className="text-xl font-semibold mb-4">Download Settings</h2>
-      
-      {error && (
-        <div className="mb-4 p-3 bg-red-600 rounded-lg">
-          {error}
-        </div>
-      )}
-      
+
+      {error && <div className="mb-4 p-3 bg-red-600 rounded-lg">{error}</div>}
+
       <div className="space-y-4">
         <div>
           <label className="block text-sm font-medium mb-2">
@@ -80,12 +103,14 @@ const DownloadSettings = ({
             <input
               type="text"
               value={downloadPath}
-              readOnly
-              className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white"
+              onChange={(e) => setDownloadPath(e.target.value)}
+              placeholder="Select download folder..."
+              className="flex-grow px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-spotify-green"
             />
-            <button
+
+            <button 
               onClick={handleBrowse}
-              className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg transition-colors"
+              className="px-4 py-2 bg-spotify-green hover:bg-green-600 text-white rounded-lg font-medium transition-colors"
             >
               Browse
             </button>
