@@ -1,20 +1,21 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import type { Playlist, Track } from "../types";
+import apiClient from "../apiClient";
 
 const TrackSelector = ({
   playlist,
   onClose,
-  onDownloadSelected,
 }: {
   playlist: Playlist;
   onClose: () => void;
-  onDownloadSelected: (trackIds: string[]) => void;
 }) => {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [selectedTracks, setSelectedTracks] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0 });
+  const [isDownloading, setIsDownloading] = useState(false);
 
   useEffect(() => {
     const fetchTracks = async () => {
@@ -74,6 +75,45 @@ const TrackSelector = ({
     const minutes = Math.floor(ms / 60000);
     const seconds = ((ms % 60000) / 1000).toFixed(0);
     return `${minutes}:${seconds.padStart(2, "0")}`;
+  };
+
+  const handleDownloadSelected = async (trackIds: string[]) => {
+    setIsDownloading(true);
+    setDownloadProgress({ current: 0, total: trackIds.length });
+    
+    // Get selected tracks
+    const selectedTracks = tracks.filter(t => trackIds.includes(t.id));
+    
+    for (const [index, track] of selectedTracks.entries()) {
+      try {
+        const response = await apiClient.post(
+          "/stream-track", 
+          {
+            track_name: track.name,
+            artist: track.artists[0]
+          },
+          {
+            responseType: "blob"
+          }
+        );
+        
+        // Create download link
+        const url = window.URL.createObjectURL(new Blob([response.data]));
+        const link = document.createElement("a");
+        link.href = url;
+        link.setAttribute("download", `${track.artists[0]} - ${track.name}.mp3`);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        
+        // Update progress
+        setDownloadProgress(prev => ({ ...prev, current: index + 1 }));
+      } catch (error) {
+        console.error("Download error:", error);
+      }
+    }
+    
+    setIsDownloading(false);
   };
 
   return (
@@ -137,6 +177,21 @@ const TrackSelector = ({
         </div>
       )}
 
+      {isDownloading && (
+        <div className="mt-4 p-3 bg-blue-900/20 rounded-lg">
+          <div className="flex justify-between text-sm mb-1">
+            <span>Downloading tracks...</span>
+            <span>{downloadProgress.current}/{downloadProgress.total}</span>
+          </div>
+          <div className="w-full bg-gray-700 rounded-full h-2">
+            <div
+              className="bg-blue-500 h-2 rounded-full"
+              style={{ width: `${(downloadProgress.current / downloadProgress.total) * 100}%` }}
+            ></div>
+          </div>
+        </div>
+      )}
+
       <div className="selection-actions mt-4 flex justify-between">
         <button
           onClick={onClose}
@@ -145,11 +200,15 @@ const TrackSelector = ({
           Close
         </button>
         <button
-          onClick={() => onDownloadSelected(selectedTracks)}
-          disabled={selectedTracks.length === 0}
+          onClick={() => handleDownloadSelected(selectedTracks)}
+          disabled={selectedTracks.length === 0 || isDownloading}
           className="bg-spotify-green hover:bg-green-600 text-white px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
         >
-          Download Selected ({selectedTracks.length})
+          {isDownloading ? (
+            `Downloading... (${downloadProgress.current}/${downloadProgress.total})`
+          ) : (
+            `Download Selected (${selectedTracks.length})`
+          )}
         </button>
       </div>
     </div>

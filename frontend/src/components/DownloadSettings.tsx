@@ -1,90 +1,92 @@
-import { useState, useEffect } from "react";
-import axios from "axios";
+import { useState } from "react";
+import apiClient from "../apiClient";
+import type { Playlist } from "../types";
 
-// Define an interface for the extended input element
-interface DirectoryInputElement extends HTMLInputElement {
-  webkitdirectory: boolean;
-  mozdirectory: boolean;
-  directory: boolean;
-}
+// Define track type structure
+type TrackItem = {
+  name: string;
+  artists: { name: string }[];
+};
 
 const DownloadSettings = ({
-  onStartDownload,
+  playlist,
 }: {
-  onStartDownload: () => void;
+  playlist: Playlist;
 }) => {
-  const [downloadPath, setDownloadPath] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0 });
+  const [isDownloading, setIsDownloading] = useState(false);
 
-  useEffect(() => {
-    const fetchDownloadPath = async () => {
-      try {
-        setError(null);
-        const response = await axios.get<{ path: string }>("/download-path");
-        setDownloadPath(response.data.path);
-      } catch (caughtError) {
-        let errorMessage = "Error fetching download path: ";
-
-        if (axios.isAxiosError(caughtError)) {
-          errorMessage +=
-            caughtError.response?.data?.error || caughtError.message;
-        } else if (caughtError instanceof Error) {
-          errorMessage += caughtError.message;
-        } else {
-          errorMessage += "Unknown error occurred";
-        }
-
-        setError(errorMessage);
-        console.error(errorMessage);
-      }
-    };
-
-    fetchDownloadPath();
-  }, []);
-
-  const handleBrowse = async () => {
+  const handleDownloadTrack = async (track: TrackItem) => {
     try {
-      // Create a hidden file input element with proper typing
-      const input = document.createElement("input") as DirectoryInputElement;
-      input.type = "file";
-      
-      // Set directory attributes with proper typing
-      input.webkitdirectory = true;
-      input.mozdirectory = true;
-      input.directory = true;
-
-      // Handle folder selection
-      input.onchange = async () => {
-        const files = input.files;
-        
-        // Proper null/undefined check with length validation
-        if (files && files.length > 0) {
-          // The folder path is the path of the first file
-          const folderPath = files[0].webkitRelativePath.split("/")[0];
-
-          try {
-            // Send the selected path to the backend
-            const response = await axios.post("/api/set-download-path", {
-              path: folderPath,
-            });
-
-            if (response.data.success) {
-              setDownloadPath(response.data.path);
-            } else {
-              setError(response.data.error || "Failed to set download path");
-            }
-          } catch (error) {
-            setError("Failed to set download path");
-            console.error("Error setting download path:", error);
-          }
+      const response = await apiClient.post(
+        "/stream-track", 
+        {
+          track_name: track.name,
+          artist: track.artists[0].name
+        },
+        {
+          responseType: "blob",
+          timeout: 300000 // 5 minutes timeout
         }
-      };
+      );
+      
+      // Create download link
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `${track.artists[0].name} - ${track.name}.mp3`);
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    
+    // Clean up after a delay
+    setTimeout(() => {
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    }, 1000);
+    
+    return true;
+  } catch (error) {
+    console.error("Download error:", error);
+    return false;
+  }
+};
+  const handleStartDownload = async () => {
+    setIsDownloading(true);
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      // Get playlist tracks
+      const response = await apiClient.post<{
+        success: boolean;
+        tracks?: TrackItem[];
+        error?: string;
+      }>("/playlist-tracks", {
+        url: playlist.url,
+      });
 
-      // Trigger the folder picker
-      input.click();
+      if (response.data.success && response.data.tracks) {
+        const tracks = response.data.tracks;
+        setDownloadProgress({ current: 0, total: tracks.length });
+        
+        // Download each track sequentially
+        for (const [index, track] of tracks.entries()) {
+          await handleDownloadTrack(track);
+          setDownloadProgress(prev => ({ ...prev, current: index + 1 }));
+          await new Promise(resolve => setTimeout(resolve, 500)); // Small delay
+        }
+      } else {
+        setError(response.data.error || "Error loading tracks");
+      }
     } catch (error) {
-      setError("Your browser does not support folder selection");
-      console.error("Folder selection error:", error);
+      setError("Failed to start download. Please try again.");
+      console.error("Download error:", error);
+    } finally {
+      setIsLoading(false);
+      setIsDownloading(false);
     }
   };
 
@@ -92,42 +94,45 @@ const DownloadSettings = ({
     <div className="bg-gray-800 rounded-lg p-6">
       <h2 className="text-xl font-semibold mb-4">Download Settings</h2>
 
-      {error && <div className="mb-4 p-3 bg-red-600 rounded-lg">{error}</div>}
+      {error && (
+        <div className="mb-4 p-3 bg-red-600 rounded-lg text-white">{error}</div>
+      )}
 
       <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium mb-2">
-            Download Location
-          </label>
-          <div className="flex gap-3">
-            <input
-              type="text"
-              value={downloadPath}
-              onChange={(e) => setDownloadPath(e.target.value)}
-              placeholder="Select download folder..."
-              className="flex-grow px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-spotify-green"
-            />
-
-            <button 
-              onClick={handleBrowse}
-              className="px-4 py-2 bg-spotify-green hover:bg-green-600 text-white rounded-lg font-medium transition-colors"
-            >
-              Browse
-            </button>
-          </div>
-        </div>
         <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-4">
           <p className="text-yellow-400 text-sm">
-            <strong>Note:</strong> This tool searches YouTube for audio tracks
-            matching your Spotify playlist. Due to YouTube's restrictions, some
-            downloads may fail. Make sure you have FFmpeg installed.
+            <strong>Note:</strong> Files will download directly to your browser's 
+            Downloads folder. No server storage is used.
           </p>
         </div>
+
+        {isDownloading && (
+          <div className="p-3 bg-blue-900/20 rounded-lg">
+            <div className="flex justify-between text-sm mb-1">
+              <span>Downloading tracks...</span>
+              <span>{downloadProgress.current}/{downloadProgress.total}</span>
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-2">
+              <div
+                className="bg-blue-500 h-2 rounded-full"
+                style={{ width: `${(downloadProgress.current / downloadProgress.total) * 100}%` }}
+              ></div>
+            </div>
+          </div>
+        )}
+
         <button
-          onClick={onStartDownload}
-          className="w-full bg-spotify-green hover:bg-green-600 text-white py-3 rounded-lg font-semibold transition-colors"
+          onClick={handleStartDownload}
+          disabled={isLoading || isDownloading}
+          className="w-full bg-spotify-green hover:bg-green-600 text-white py-3 rounded-lg font-semibold transition-colors disabled:opacity-50"
         >
-          Start Download
+          {isDownloading ? (
+            `Downloading... (${downloadProgress.current}/${downloadProgress.total})`
+          ) : isLoading ? (
+            "Loading tracks..."
+          ) : (
+            "Start Download"
+          )}
         </button>
       </div>
     </div>

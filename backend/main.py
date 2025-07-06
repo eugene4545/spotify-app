@@ -1,6 +1,15 @@
 # backend/main.py
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse
+import time
+import json
+from fastapi.responses import StreamingResponse
+import httpx
+from yt_dlp import YoutubeDL
+import re
+import urllib.parse
 import tkinter as tk
 from tkinter import filedialog
 from pydantic import BaseModel
@@ -10,7 +19,10 @@ import spotipy
 import uvicorn
 import asyncio
 import logging
-import os  # Added missing import
+from pathlib import Path
+import os
+from fastapi.responses import FileResponse
+import atexit
 import platform
 import subprocess
 
@@ -24,13 +36,16 @@ api = SpotifyDownloaderAPI()
 auth_event = asyncio.Event()
 
 # CORS Configuration
-origins = ["http://localhost:5173"]
+origins = ["http://localhost:5173",
+           "http://127.0.0.1:5173"
+           ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "Content-Length"]
 )
 
 # Pydantic Models
@@ -45,7 +60,11 @@ class DownloadRequest(BaseModel):
     url: str
     track_ids: Optional[List[str]] = None
 
-# API Endpoints - Note: /api prefix is handled by frontend proxy
+class StreamRequest(BaseModel):
+    track_name: str
+    artist: str
+
+# API Endpoints
 @app.get("/api/are-credentials-set")
 def are_credentials_set():
     return api.are_credentials_set()
@@ -62,6 +81,23 @@ def start_auth_flow():
 def is_authenticated():
     return api.is_authenticated()
 
+# @app.get("/api/download-logs")
+# def download_logs():
+#     return api.get_download_logs()
+
+@app.get("/api/download-logs-stream")
+def stream_logs():
+    def event_generator():
+        last = 0
+        while True:
+            logs = api.get_download_logs()['logs']
+            # send any new lines
+            for line in logs[last:]:
+                yield f"data: {json.dumps(line)}\n\n"
+            last = len(logs)
+            time.sleep(1)
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 @app.get("/api/playlists")
 def get_user_playlists():
     return api.get_user_playlists()
@@ -74,64 +110,107 @@ def get_playlist_info(req: PlaylistRequest):
 def get_playlist_tracks(req: PlaylistRequest):
     return api.get_playlist_tracks_info(req.url)
 
-@app.post("/api/download")
-def start_download(req: DownloadRequest):
-    if req.track_ids:
-        return api.download_selected_tracks(req.url, req.track_ids)
-    else:
-        return api.start_download(req.url)
-
 @app.get("/api/progress")
 def get_download_progress():
     return api.get_download_progress()
 
-@app.get("/api/download-path")
-def get_download_path():
-    return api.get_download_path()
-
-@app.post("/api/set-download-path")
-def set_download_path(path: str):
-    if not path:
-        return {"error": "No path provided"}
-    
-    try:
-        # Expand home directory if needed
-        expanded_path = os.path.expanduser(path)
-        
-        # Create the directory if it doesn't exist
-        os.makedirs(expanded_path, exist_ok=True)
-        
-        # Set and return the path
-        api.set_download_path(expanded_path)
-        return {"success": True, "path": expanded_path}
-    except Exception as e:
-        logging.error(f"Error setting download path: {e}")
-        return {"error": f"Invalid path: {str(e)}"}
+@app.post("/api/start-download")
+def start_download(req: PlaylistRequest):
+    return api.start_download(req.url)
 
 @app.get("/api/stop-download")
 def stop_download():
     return api.stop_download()
 
-@app.get("/api/open-download-folder")
-def open_download_folder():
-    import os
-    import subprocess
-    import platform
+@app.get("/api/test-download")
+async def test_download():
+    # Create a test file
+    test_path = os.path.join(api.temp_download_path, "test.mp3")
+    with open(test_path, "wb") as f:
+        f.write(b"TEST AUDIO FILE")
     
+    return FileResponse(
+        test_path,
+        media_type="audio/mpeg",
+        filename="test.mp3",
+        headers={
+            "Content-Disposition": "attachment; filename=\"test.mp3\"",
+            "Content-Type": "audio/mpeg"
+        }
+    )
+
+@app.post("/api/stream-track")
+async def stream_track(req: StreamRequest):
+    """Stream a track directly from YouTube to client"""
     try:
-        download_path = api.get_download_path()["path"]
+        # Search YouTube
+        search_query = urllib.parse.quote(f"{req.track_name} {req.artist} official")
+        video_url = None
         
-        # Open folder based on OS
-        if platform.system() == "Windows":
-            os.startfile(download_path)
-        elif platform.system() == "Darwin":  # macOS
-            subprocess.run(["open", download_path])
-        else:  # Linux
-            subprocess.run(["xdg-open", download_path])
+        # Find best YouTube video
+        try:
+            html = httpx.get(f"https://www.youtube.com/results?search_query={search_query}").text
+            video_ids = re.findall(r"watch\?v=(\S{11})", html)
+            if video_ids:
+                video_url = f"https://www.youtube.com/watch?v={video_ids[0]}"
+        except Exception as e:
+            logging.error(f"Error searching YouTube: {e}")
+            raise HTTPException(status_code=500, detail="YouTube search failed")
+        
+        if not video_url:
+            raise HTTPException(status_code=404, detail="No YouTube video found")
+        
+        # Setup yt-dlp options for direct streaming
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+            'logger': logging,
+            'extract_flat': False,
+            'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Referer': 'https://www.youtube.com/',
+    },
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '192',
+    }],
+    'socket_timeout': 60,
+    'nocheckcertificate': True,
+    'progress_hooks': [ api._create_progress_hook()],
+        }
+        
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            audio_url = info['url']
+        
+        # Generate filename
+        filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
+        
+        # Create generator function for streaming
+        def generate():
+            with httpx.stream("GET", audio_url, timeout=60.0) as response:
+                for chunk in response.iter_bytes():
+                    yield chunk
+        
+        return StreamingResponse(
+            generate(),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Type": "audio/mpeg",
+                "Cache-Control": "no-cache",
+                "Accept-Ranges": "bytes"
+            }
+        )
             
-        return {"success": True, "message": "Folder opened"}
     except Exception as e:
-        return {"error": str(e)}
+        logging.error(f"Streaming error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Spotify Callback Handler
 @app.get("/callback")
