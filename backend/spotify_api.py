@@ -11,6 +11,8 @@ import spotipy
 from spotipy import SpotifyOAuth
 from yt_dlp import YoutubeDL
 import logging
+import tempfile
+
 
 class DownloadInterrupted(Exception):
     pass
@@ -22,19 +24,31 @@ class SpotifyDownloaderAPI:
         self.redirect_uri = "http://127.0.0.1:8000/callback"
         self.credentials_set = False
         
+        
         self.env_path = '.env'
         self._check_credentials()
         
         # Initialize these as None first
         self.sp_oauth = None
         self.sp = None
+
+        self.temp_download_path = os.path.join(str(Path.home()), "spotify_downloads_temp")
+        logging.info(f"Created persistent temp download directory: {self.temp_download_path}")
+
+        self.download_path = self.temp_download_path  # Use temp dir
         
+          # Make sure temp_download_path exists
+        os.makedirs(self.temp_download_path, exist_ok=True)
+        logging.info(f"Temp download path: {self.temp_download_path}")
+
         # Set up Spotify auth if credentials are available
         if self.credentials_set:
             self._setup_spotify_auth()
         
         self.is_downloading = False
         self.download_progress = {"current": 0, "total": 0, "status": "idle"}
+        self.download_log: List[str] = []
+
         self.download_path = str(Path.home() / "Downloads" / "Spotify_Downloads")
 
     def _check_credentials(self):
@@ -201,23 +215,22 @@ class SpotifyDownloaderAPI:
             logging.error(f"Error getting playlist info: {e}")
             return {"error": str(e)}
             
-    def set_download_path(self, path: str):
-        """Set download directory"""
-        try:
-            self.download_path = path
-            os.makedirs(path, exist_ok=True)
-            return {"success": True, "path": path}
-        except Exception as e:
-            return {"error": f"Invalid path: {str(e)}"}
+    # def set_download_path(self, path: str):
+    #     """Set download directory"""
+    #     try:
+    #         self.download_path = path
+    #         os.makedirs(path, exist_ok=True)
+    #         return {"success": True, "path": path}
+    #     except Exception as e:
+    #         return {"error": f"Invalid path: {str(e)}"}
             
-    def get_download_path(self):
-        """Get current download path"""
-        return {"path": self.download_path}
+    # def get_download_path(self):
+    #     """Get current download path"""
+    #     return {"path": self.download_path}
         
     def sanitize_filename(self, filename: str) -> str:
-        """Sanitize filename for safe file system usage"""
-        valid_chars = f"-_.() {string.ascii_letters}{string.digits}"
-        return ''.join(c for c in filename if c in valid_chars)
+        cleaned = re.sub(r'[^\w\s\-.)(]', '', filename)
+        return cleaned.strip()[:150]
         
     def get_playlist_tracks(self, playlist_id: str) -> List[Dict]:
         """Fetch all tracks from a playlist"""
@@ -321,9 +334,12 @@ class SpotifyDownloaderAPI:
                 playlist_name = self.sanitize_filename(playlist['name'])
                 
                 # Create download folder
-                download_folder = os.path.join(self.download_path, playlist_name)
-                os.makedirs(download_folder, exist_ok=True)
+                # download_folder = os.path.join(self.download_path, playlist_name)
+                # os.makedirs(download_folder, exist_ok=True)
                 
+                download_folder = self.temp_download_path
+
+
                 # Get all tracks
                 raw_tracks = self.get_playlist_tracks(playlist_id)
                 
@@ -349,9 +365,11 @@ class SpotifyDownloaderAPI:
                     if self.download_track(track_info, download_folder):
                         successful_downloads += 1
                         
+
                 self.download_progress["status"] = "completed"
                 self.download_progress["successful"] = successful_downloads
                 self.is_downloading = False
+                self.get_downloaded_files()
                 
             except Exception as e:
                 logging.error(f"Download error: {e}")
@@ -369,18 +387,20 @@ class SpotifyDownloaderAPI:
         try:
             track = track_info['track']
             if not track or track['type'] != 'track':
-                return False
+                return False 
                 
             artist_name = track['artists'][0]['name']
             track_name = track['name']
             
             sanitized_name = self.sanitize_filename(f"{artist_name} - {track_name}")
-            final_file = os.path.join(download_folder, f"{sanitized_name}.mp3")
-            
+            final_file = os.path.join(self.temp_download_path, f"{sanitized_name}.mp3")
+
+            logging.info(f"Saving track to: {final_file}")
+
             # Skip if already exists
-            if os.path.exists(final_file):
-                logging.info(f"Skipping existing file: {sanitized_name}")
-                return True
+            # if os.path.exists(final_file) and not final_file.endswith('.part'):
+            #     logging.info(f"Skipping existing file: {sanitized_name}")
+            # return True
                 
             # Search YouTube
             search_query = urllib.parse.quote(f"{track_name} {artist_name} official")
@@ -408,21 +428,16 @@ class SpotifyDownloaderAPI:
                     
                     ydl_opts = {
                         'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
-                        'outtmpl': os.path.join(download_folder, f'{sanitized_name}.%(ext)s'),
-                        'postprocessors': [{
-                            'key': 'FFmpegExtractAudio',
-                            'preferredcodec': 'mp3',
-                            'preferredquality': '192',
-                        }],
+                        'outtmpl': f'{self.temp_download_path}/%(title)s.%(ext)s',
                         'noplaylist': True,
                         'quiet': True,
                         'no_warnings': True,
                         'ignoreerrors': True,
                         'extract_flat': False,
+                        'continuedl': True,
                         'writethumbnail': False,
                         'writeinfojson': False,
                         'cookiefile': None,
-                        'timeout': 30,
                         'extractor_args': {
                             'youtube': {
                                 'player_client': ['android', 'web'],
@@ -432,7 +447,13 @@ class SpotifyDownloaderAPI:
                         'http_headers': {
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                         },
-                        'progress_hooks': [self._create_progress_hook()]
+                        'postprocessors': [{
+                            'key': 'FFmpegExtractAudio',
+                            'preferredcodec': 'mp3',
+                            'preferredquality': '192',
+                        }],
+                        'progress_hooks': [self._create_progress_hook()],
+                        'timeout': 60
                     }
                     
                     with YoutubeDL(ydl_opts) as ydl:
@@ -456,10 +477,30 @@ class SpotifyDownloaderAPI:
             return False
 
     def _create_progress_hook(self):
-        """Create a progress hook that checks for download cancellation"""
         def progress_hook(d):
-            if not self.is_downloading:
-                raise DownloadInterrupted()
+            status = d.get('status')
+            if status == 'downloading':
+                downloaded = d.get('downloaded_bytes', 0)
+                total     = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+                percent   = downloaded / total * 100 if total else 0
+                msg = f"Downloading {d.get('filename')} — {percent:.1f}%"
+                self.download_progress.update({
+                    "current": d.get('downloaded_bytes', 0),
+                    "total": total,
+                    "status": "downloading",
+                    "percent": percent
+                })
+                self.download_log.append(msg)
+
+                # enforce your timeout if you want
+                if d.get('elapsed') and d['elapsed'] > 120:
+                    raise Exception("Download timed out")
+
+            elif status in ('finished', 'error'):
+                msg = f"{'Finished' if status=='finished' else 'Error'}: {d.get('filename')}"
+                self.download_progress["status"] = status
+                self.download_log.append(msg)
+
         return progress_hook
             
     def start_download(self, playlist_url: str):
@@ -480,9 +521,12 @@ class SpotifyDownloaderAPI:
                 playlist_name = self.sanitize_filename(playlist['name'])
                 
                 # Create download folder
-                download_folder = os.path.join(self.download_path, playlist_name)
-                os.makedirs(download_folder, exist_ok=True)
+
+                # download_folder = os.path.join(self.download_path, playlist_name)
+                # os.makedirs(download_folder, exist_ok=True)
                 
+                download_folder = self.temp_download_path
+
                 # Get all tracks
                 tracks = self.get_playlist_tracks(playlist_id)
                 total_tracks = len(tracks)
@@ -497,8 +541,9 @@ class SpotifyDownloaderAPI:
                         self.download_progress["status"] = "cancelled"
                         return
                         
+                    track = track_info['track']
                     self.download_progress["current"] = i + 1
-                    self.download_progress["current_track"] = f"{track_info['track']['artists'][0]['name']} - {track_info['track']['name']}"
+                    self.download_progress["current_track"] = f"{track['artists'][0]['name']} - {track['name']}"
                     
                     if self.download_track(track_info, download_folder):
                         successful_downloads += 1
@@ -527,3 +572,31 @@ class SpotifyDownloaderAPI:
     def get_download_progress(self):
         """Get current download progress"""
         return self.download_progress
+    
+    def get_downloaded_files(self):
+        try:
+            if not os.path.exists(self.temp_download_path):
+                return {"files": []}
+            
+            return {
+                "files": [
+                    f for f in os.listdir(self.temp_download_path)
+                if os.path.isfile(os.path.join(self.temp_download_path, f)) 
+                and not f.endswith('.part')  # Exclude incomplete files
+                ]
+            }
+        except Exception as e:
+            logging.error(f"Error listing downloaded files: {e}")
+            return {"error": str(e)}
+        
+def cleanup_temp_files(self):
+        try:
+            import shutil
+            if os.path.exists(self.temp_download_path):
+                shutil.rmtree(self.temp_download_path)
+                logging.info(f"Cleaned up temp directory: {self.temp_download_path}")
+        except Exception as e:
+            logging.error(f"Error cleaning temp files: {e}")
+
+        def get_download_logs(self):
+                return {"logs": self.download_log}

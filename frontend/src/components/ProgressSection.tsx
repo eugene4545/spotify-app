@@ -3,13 +3,12 @@ import type { ProgressData, ProgressStatus } from "../types";
 const ProgressSection = ({
   progress,
   onStopDownload,
-  onOpenFolder,
 }: {
   progress: ProgressData;
   onStopDownload: () => void;
-  onOpenFolder: () => void;
 }) => {
-  const percentage = progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
+  const percentage =
+    progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
 
   const getStatusText = (status: ProgressStatus) => {
     switch (status) {
@@ -18,7 +17,9 @@ const ProgressSection = ({
       case "downloading":
         return "Downloading tracks...";
       case "completed":
-        return `Completed! ${progress.successful || progress.current} tracks downloaded.`;
+        return `Completed! ${
+          progress.successful || progress.current
+        } tracks downloaded.`;
       case "cancelled":
         return "Download cancelled";
       case "error":
@@ -57,18 +58,28 @@ const ProgressSection = ({
         )}
 
         <div className="flex gap-3">
-          <button
-            onClick={onStopDownload}
-            className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
-          >
-            Stop Download
-          </button>
-          <button
-            onClick={onOpenFolder}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
-          >
-            Open Download Folder
-          </button>
+          {/* Only show stop button during active downloads */}
+          {(progress.status === "starting" ||
+            progress.status === "downloading") && (
+            <button
+              onClick={onStopDownload}
+              className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors"
+            >
+              Stop Download
+            </button>
+          )}
+
+          {/* Show completion message instead of open folder button */}
+          {progress.status === "completed" && (
+            <button
+              onClick={() =>
+                document.getElementById("download-all-btn")?.click()
+              }
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
+            >
+              Download All Files
+            </button>
+          )}
         </div>
       </div>
     </div>

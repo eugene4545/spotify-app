@@ -7,6 +7,7 @@ import PlaylistDetails from "./components/PlaylistDetails";
 import TrackSelector from "./components/TrackSelector";
 import DownloadSettings from "./components/DownloadSettings";
 import ProgressSection from "./components/ProgressSection";
+import apiClient from "./apiClient";
 
 // Configure Axios
 axios.defaults.baseURL = "/api";
@@ -17,17 +18,17 @@ function App() {
   const [authenticated, setAuthenticated] = useState(false);
   const [selectedPlaylist, setSelectedPlaylist] = useState<any>(null);
   const [showTracks, setShowTracks] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState<any>({});
+  const [downloadProgress, setDownloadProgress] = useState<any>(null);
 
   // Check initial state
   useEffect(() => {
     const checkInitialState = async () => {
       try {
-        const { data } = await axios.get("/are-credentials-set");
+        const { data } = await apiClient.get("/are-credentials-set");
         setCredentialsSet(data.credentials_set);
 
         if (data.credentials_set) {
-          const authRes = await axios.get("/is-authenticated");
+          const authRes = await apiClient.get("/is-authenticated");
           setAuthenticated(authRes.data.authenticated);
           setAppState(authRes.data.authenticated ? "main" : "auth");
         } else {
@@ -39,19 +40,23 @@ function App() {
     };
 
     checkInitialState();
+  }, []);
 
-    // Start progress polling
-    const interval = setInterval(async () => {
+  useEffect(() => {
+    if (appState !== "main") return;
+
+    const fetchProgress = async () => {
       try {
-        const { data } = await axios.get("/progress");
-        setDownloadProgress(data);
+        const response = await apiClient.get("/progress");
+        setDownloadProgress(response.data);
       } catch (error) {
         console.error("Error fetching progress:", error);
       }
-    }, 1000);
+    };
 
+    const interval = setInterval(fetchProgress, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [appState]);
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-4xl">
@@ -88,33 +93,23 @@ function App() {
             />
           )}
 
-          {selectedPlaylist && !showTracks && (
-            <DownloadSettings
-              playlist={selectedPlaylist}
-              onStartDownload={() => {
-                axios.post("/download", { url: selectedPlaylist.url });
+          {downloadProgress && downloadProgress.status !== "idle" && (
+            <ProgressSection
+              progress={downloadProgress}
+              onStopDownload={async () => {
+                await apiClient.get("/api/stop-download");
               }}
             />
+          )}
+
+          {selectedPlaylist && !showTracks && (
+            <DownloadSettings playlist={selectedPlaylist} />
           )}
 
           {showTracks && selectedPlaylist && (
             <TrackSelector
               playlist={selectedPlaylist}
               onClose={() => setShowTracks(false)}
-              onDownloadSelected={(trackIds) => {
-                axios.post("/download", {
-                  url: selectedPlaylist.url,
-                  track_ids: trackIds,
-                });
-              }}
-            />
-          )}
-
-          {downloadProgress.status && downloadProgress.status !== "idle" && (
-            <ProgressSection
-              progress={downloadProgress}
-              onStopDownload={() => axios.get("/stop-download")}
-              onOpenFolder={() => axios.get("/open-download-folder")}
             />
           )}
         </div>
