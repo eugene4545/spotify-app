@@ -22,6 +22,7 @@ import logging
 from pathlib import Path
 import os
 from fastapi.responses import FileResponse
+import tempfile
 import atexit
 import platform
 import subprocess
@@ -160,37 +161,44 @@ async def stream_track(req: StreamRequest):
         if not video_url:
             raise HTTPException(status_code=404, detail="No YouTube video found")
         
+        tmp_dir = tempfile.mkdtemp()
+        tmp_path = os.path.join(tmp_dir, "%(title)s.%(ext)s")
+
         # Setup yt-dlp options for direct streaming
         ydl_opts = {
             'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
+            'outtmpl': tmp_path,
             'noplaylist': True,
-            'logger': logging,
-            'extract_flat': False,
-            'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': 'https://www.youtube.com/',
-    },
+    #         'http_headers': {
+    #         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    #         'Accept': '*/*',
+    #         'Accept-Language': 'en-US,en;q=0.5',
+    #         'Referer': 'https://www.youtube.com/',
+    # },
     'postprocessors': [{
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'mp3',
         'preferredquality': '192',
     }],
+    'quiet': True,
     'socket_timeout': 60,
     'nocheckcertificate': True,
     'progress_hooks': [ api._create_progress_hook()],
         }
         
         with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
+            info = ydl.extract_info(video_url, download=True)
             audio_url = info['url']
         
         # Generate filename
-        filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
-        
+        # filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
+        filename = ydl.prepare_filename(info).rsplit(".", 1)[0] + ".mp3"
+
+        return FileResponse(
+      path=filename,
+      media_type="audio/mpeg",
+      filename=os.path.basename(filename),
+    )
         # Create generator function for streaming
         def generate():
             with httpx.stream("GET", audio_url, timeout=60.0) as response:
