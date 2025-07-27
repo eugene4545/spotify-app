@@ -6,3 +6,6 @@ yt-dlp>=2023.7.6
 requests>=2.31.0
 mutagen>=1.47.0
 pydantic>=2.7.0
+httpx>=0.24.0
+aiofiles>=23.0.0
+python-multipart>=0.0.6
