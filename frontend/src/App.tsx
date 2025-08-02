@@ -93,6 +93,13 @@ function App() {
             />
           )}
 
+          {appState !== "main" && (
+            <p className="text-xs text-gray-400">
+              Credentials: {credentialsSet ? "✔️" : "❌"} | Authenticated:{" "}
+              {authenticated ? "✔️" : "❌"}
+            </p>
+          )}
+
           {downloadProgress && downloadProgress.status !== "idle" && (
             <ProgressSection
               progress={downloadProgress}
