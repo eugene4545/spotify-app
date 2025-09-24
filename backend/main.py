@@ -10,8 +10,6 @@ import httpx
 from yt_dlp import YoutubeDL
 import re
 import urllib.parse
-import tkinter as tk
-from tkinter import filedialog
 from pydantic import BaseModel
 from typing import Optional, List
 from spotify_api import SpotifyDownloaderAPI
