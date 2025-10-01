@@ -10,8 +10,11 @@ import ProgressSection from "./components/ProgressSection";
 import apiClient from "./apiClient";
 
 // Configure Axios
-axios.defaults.baseURL = import.meta.env.PROD ? "" : "/api";
+const API_BASE_URL = import.meta.env.PROD 
+  ? "https://spotify-app-backend-yqzt.onrender.com/api"
+  : "/api";
 
+axios.defaults.baseURL = API_BASE_URL;
 
 
 function App() {

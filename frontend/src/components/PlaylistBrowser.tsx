@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import type { Playlist } from "../types";
+import apiClient from "../apiClient";
 
 const PlaylistBrowser = ({
   onSelectPlaylist,
@@ -17,7 +18,7 @@ const PlaylistBrowser = ({
     const fetchPlaylists = async () => {
       try {
         setIsLoading(true);
-        const response = await axios.get<{
+        const response = await apiClient.get<{
           success: boolean;
           playlists?: Playlist[];
           error?: string;
