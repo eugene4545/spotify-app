@@ -20,7 +20,6 @@ const DownloadSettings = ({
 
 const handleDownloadTrack = async (track: TrackItem) => {
   try {
-    // Try direct download first
     const response = await fetch(
       `https://spotify-app-backend-yqzt.onrender.com/api/stream-track`,
       {
@@ -36,15 +35,60 @@ const handleDownloadTrack = async (track: TrackItem) => {
     );
     
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      const errorText = await response.text();
+      throw new Error(`Download failed: ${response.status} - ${errorText}`);
     }
     
     const blob = await response.blob();
     
     if (blob.size === 0) {
-      throw new Error("Empty file received");
+      throw new Error("Empty file received - download may have timed out");
     }
     
+    // Check if it's actually an MP3 file
+    if (blob.type !== 'audio/mpeg' && blob.size < 1000) {
+      const text = await blob.text();
+      if (text.includes('error') || text.includes('Error')) {
+        throw new Error(`Server error: ${text}`);
+      }
+    }
+    
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${track.artists[0].name} - ${track.name}.mp3`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+    
+    return true;
+  } catch (error) {
+    console.error("Download failed:", error);
+    // Try alternative endpoint
+    return await handleDownloadTrackAlternative(track);
+  }
+};
+
+const handleDownloadTrackAlternative = async (track: TrackItem) => {
+  try {
+    const response = await fetch(
+      `https://spotify-app-backend-yqzt.onrender.com/api/stream-track-direct`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          track_name: track.name,
+          artist: track.artists[0].name
+        })
+      }
+    );
+    
+    if (!response.ok) throw new Error(`Alternative download failed: ${response.status}`);
+    
+    const blob = await response.blob();
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -54,7 +98,7 @@ const handleDownloadTrack = async (track: TrackItem) => {
     
     return true;
   } catch (error) {
-    console.error("Download failed:", error);
+    console.error("Alternative download also failed:", error);
     return false;
   }
 };
