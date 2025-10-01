@@ -142,83 +142,67 @@ async def test_download():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Stream a track directly from YouTube to client"""
+    """Simple direct download approach"""
     try:
-        # Search YouTube
-        search_query = urllib.parse.quote(f"{req.track_name} {req.artist} official")
-        video_url = None
+        search_query = f"{req.track_name} {req.artist}"
+        filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
         
-        # Find best YouTube video
-        try:
-            html = httpx.get(f"https://www.youtube.com/results?search_query={search_query}").text
-            video_ids = re.findall(r"watch\?v=(\S{11})", html)
-            if video_ids:
-                video_url = f"https://www.youtube.com/watch?v={video_ids[0]}"
-        except Exception as e:
-            logging.error(f"Error searching YouTube: {e}")
-            raise HTTPException(status_code=500, detail="YouTube search failed")
-        
-        if not video_url:
-            raise HTTPException(status_code=404, detail="No YouTube video found")
-        
-        tmp_dir = tempfile.mkdtemp()
-        tmp_path = os.path.join(tmp_dir, "%(title)s.%(ext)s")
-
-        # Setup yt-dlp options for direct streaming
+        # Simple yt-dlp configuration
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': tmp_path,
-            'noplaylist': True,
-    #         'http_headers': {
-    #         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    #         'Accept': '*/*',
-    #         'Accept-Language': 'en-US,en;q=0.5',
-    #         'Referer': 'https://www.youtube.com/',
-    # },
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '192',
-    }],
-    'quiet': True,
-    'socket_timeout': 60,
-    'nocheckcertificate': True,
-    'progress_hooks': [ api._create_progress_hook()],
+            'outtmpl': '%(title)s.%(ext)s',
+            'quiet': False,  # Set to False to see debug info
+            'no_warnings': False,
+            'ignoreerrors': True,
+            'no_check_certificate': True,
+            
+            # Audio conversion
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            
+            # Basic headers
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            },
         }
         
         with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
-            audio_url = info['url']
-        
-        # Generate filename
-        # filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
-        filename = ydl.prepare_filename(info).rsplit(".", 1)[0] + ".mp3"
-
-        return FileResponse(
-      path=filename,
-      media_type="audio/mpeg",
-      filename=os.path.basename(filename),
-    )
-        # Create generator function for streaming
-        def generate():
-            with httpx.stream("GET", audio_url, timeout=60.0) as response:
-                for chunk in response.iter_bytes():
-                    yield chunk
-        
-        return StreamingResponse(
-            generate(),
-            media_type="audio/mpeg",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Type": "audio/mpeg",
-                "Cache-Control": "no-cache",
-                "Accept-Ranges": "bytes"
-            }
-        )
+            try:
+                # Get video info first
+                info = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
+                if not info or 'entries' not in info or not info['entries']:
+                    raise HTTPException(status_code=404, detail="No video found")
+                
+                video_url = info['entries'][0]['webpage_url']
+                logging.info(f"Found video: {video_url}")
+                
+                # Now download it
+                result = ydl.extract_info(video_url, download=True)
+                downloaded_file = ydl.prepare_filename(result).replace('.webm', '.mp3').replace('.m4a', '.mp3')
+                
+                if not os.path.exists(downloaded_file):
+                    raise HTTPException(status_code=500, detail="Downloaded file not found")
+                
+                # Return the file
+                return FileResponse(
+                    downloaded_file,
+                    media_type='audio/mpeg',
+                    filename=filename,
+                    background=BackgroundTask(lambda: os.unlink(downloaded_file) if os.path.exists(downloaded_file) else None)
+                )
+                
+            except Exception as e:
+                logging.error(f"Download error: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
             
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Streaming error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 # Spotify Callback Handler
 @app.get("/callback")
