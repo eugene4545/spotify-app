@@ -142,103 +142,102 @@ async def test_download():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Stream track using in-memory buffer"""
+    """Download and stream track using yt-dlp with proper audio conversion"""
     try:
-        search_query = urllib.parse.quote(f"{req.track_name} {req.artist} official")
-        video_url = None
-        
-        try:
-            # Use better search with headers
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-            
-            async with httpx.AsyncClient(headers=headers) as client:
-                response = await client.get(f"https://www.youtube.com/results?search_query={search_query}")
-                video_ids = re.findall(r"watch\?v=(\S{11})", response.text)
-                if video_ids:
-                    video_url = f"https://www.youtube.com/watch?v={video_ids[0]}"
-        except Exception as e:
-            logging.error(f"YouTube search error: {e}")
-            raise HTTPException(status_code=500, detail="YouTube search failed")
-        
-        if not video_url:
-            raise HTTPException(status_code=404, detail="No YouTube video found")
-        
-        # Improved yt-dlp configuration to avoid bot detection
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': False,
-            'ignoreerrors': True,
-            'no_check_certificate': True,
-            'geo_bypass': True,
-            'geo_bypass_country': 'US',
-            'extract_flat': False,
-            
-            # Headers and user agent
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.youtube.com/',
-            },
-            
-            # Extractor args to avoid bot detection
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web'],
-                    'skip': ['hls', 'dash'],
-                }
-            },
-        }
-        
+        search_query = f"{req.track_name} {req.artist}"
         filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
         
-        with YoutubeDL(ydl_opts) as ydl:
-            try:
-                info = ydl.extract_info(video_url, download=False)
-                if not info or 'url' not in info:
-                    raise HTTPException(status_code=500, detail="Could not extract audio URL")
-                
-                audio_url = info['url']
-                
-                # Stream directly
-                async def generate():
-                    headers = {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Range': 'bytes=0-',
-                        'Referer': 'https://www.youtube.com/',
-                    }
-                    
-                    async with httpx.AsyncClient(headers=headers, timeout=60.0) as client:
-                        async with client.stream("GET", audio_url) as response:
-                            async for chunk in response.aiter_bytes():
-                                yield chunk
-                
-                return StreamingResponse(
-                    generate(),
-                    media_type="audio/mpeg",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{filename}"',
-                        "Content-Type": "audio/mpeg",
-                        "Cache-Control": "no-cache",
-                    }
-                )
-                
-            except Exception as e:
-                logging.error(f"YT-DLP extraction error: {e}")
-                raise HTTPException(status_code=500, detail=f"Audio extraction failed: {str(e)}")
+        # Create a temporary file
+        import tempfile
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        # Use a thread pool to run yt-dlp (it's synchronous)
+        def download_audio():
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                tmp_path = tmp_file.name
             
-    except HTTPException:
-        raise
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': tmp_path.replace('.mp3', '.%(ext)s'),  # yt-dlp will add extension
+                'quiet': True,
+                'no_warnings': False,
+                'ignoreerrors': True,
+                'no_check_certificate': True,
+                'extract_flat': False,
+                
+                # Postprocessor for audio conversion
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                
+                # Headers to avoid bot detection
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://www.youtube.com/',
+                },
+            }
+            
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    # Search and download
+                    info = ydl.extract_info(f"ytsearch1:{search_query}", download=True)
+                    if not info:
+                        raise Exception("No video found")
+                    
+                    # Find the downloaded file
+                    actual_path = tmp_path.replace('.mp3', '.mp3')
+                    if not os.path.exists(actual_path):
+                        # Try to find the actual file name
+                        downloaded_files = [f for f in os.listdir('.') if f.startswith(os.path.basename(tmp_path).replace('.mp3', ''))]
+                        if downloaded_files:
+                            actual_path = downloaded_files[0]
+                        else:
+                            raise Exception("Downloaded file not found")
+                    
+                    return actual_path
+                    
+            except Exception as e:
+                # Clean up on error
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                raise e
+        
+        # Run download in thread pool
+        with ThreadPoolExecutor() as executor:
+            future = executor.submit(download_audio)
+            downloaded_file = await asyncio.get_event_loop().run_in_executor(None, future.result)
+        
+        if not os.path.exists(downloaded_file):
+            raise HTTPException(status_code=500, detail="File download failed")
+        
+        # Stream the file
+        async def file_stream():
+            try:
+                with open(downloaded_file, 'rb') as f:
+                    while True:
+                        chunk = f.read(8192)
+                        if not chunk:
+                            break
+                        yield chunk
+            finally:
+                # Clean up the temporary file
+                if os.path.exists(downloaded_file):
+                    os.unlink(downloaded_file)
+        
+        return StreamingResponse(
+            file_stream(),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Type": "audio/mpeg",
+            }
+        )
+            
     except Exception as e:
         logging.error(f"Streaming error: {e}")
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
