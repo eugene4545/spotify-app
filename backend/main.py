@@ -146,115 +146,140 @@ async def test_download():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Simplified download approach without BackgroundTask"""
+    """Enhanced download with multiple fallback strategies"""
     try:
         search_query = f"{req.track_name} {req.artist}"
         filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
         
-        # Create temporary directory for this request
-        import uuid
-        temp_dir = f"temp_{uuid.uuid4().hex}"
-        os.makedirs(temp_dir, exist_ok=True)
+        logging.info(f"Starting download for: {search_query}")
         
-        # yt-dlp configuration
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': f'{temp_dir}/%(title)s.%(ext)s',
-            'quiet': False,  # Show logs for debugging
-            'no_warnings': False,
-            'ignoreerrors': True,
-            'no_check_certificate': True,
-            'extract_flat': False,
-            
-            # Postprocessor for audio conversion
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-            
-            # Headers to avoid bot detection
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.youtube.com/',
-            },
-        }
+        # Try multiple search strategies
+        strategies = [
+            f"ytsearch1:{search_query}",
+            f"ytsearch:{search_query}",
+            f"ytsearch10:{search_query}",
+        ]
         
-        with YoutubeDL(ydl_opts) as ydl:
+        for strategy in strategies:
             try:
-                logging.info(f"Searching for: {search_query}")
-                
-                # Search for the video
-                search_result = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
-                
-                if not search_result:
-                    raise HTTPException(status_code=404, detail="No search results found")
-                
-                if 'entries' not in search_result or not search_result['entries']:
-                    raise HTTPException(status_code=404, detail="No videos found in search results")
-                
-                video_info = search_result['entries'][0]
-                if not video_info:
-                    raise HTTPException(status_code=404, detail="First video result is invalid")
-                
-                video_url = video_info.get('webpage_url') or video_info.get('url')
-                if not video_url:
-                    raise HTTPException(status_code=404, detail="Could not get video URL")
-                
-                logging.info(f"Found video: {video_url}")
-                
-                # Download the video
-                download_result = ydl.extract_info(video_url, download=True)
-                
-                if not download_result:
-                    raise HTTPException(status_code=500, detail="Download failed - no result")
-                
-                # Get the downloaded file path
-                original_filename = ydl.prepare_filename(download_result)
-                mp3_filename = original_filename.replace('.webm', '.mp3').replace('.m4a', '.mp3')
-                
-                # If the file doesn't exist with expected name, look for any .mp3 file in temp dir
-                if not os.path.exists(mp3_filename):
-                    for file in os.listdir(temp_dir):
-                        if file.endswith('.mp3'):
-                            mp3_filename = os.path.join(temp_dir, file)
-                            break
-                    else:
-                        raise HTTPException(status_code=500, detail="Downloaded file not found")
-                
-                logging.info(f"Sending file: {mp3_filename}")
-                
-                # Read file content and clean up immediately
-                with open(mp3_filename, 'rb') as f:
-                    file_content = f.read()
-                
-                # Clean up temporary directory
-                import shutil
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                
-                # Return the file content as streaming response
-                from io import BytesIO
-                return StreamingResponse(
-                    BytesIO(file_content),
-                    media_type="audio/mpeg",
-                    headers={
-                        "Content-Disposition": f'attachment; filename="{filename}"',
-                        "Content-Type": "audio/mpeg",
-                    }
-                )
-                
+                result = await attempt_download(strategy, filename)
+                if result:
+                    return result
+                logging.info(f"Strategy '{strategy}' failed, trying next...")
             except Exception as e:
-                # Clean up on error
-                import shutil
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                logging.error(f"Download error: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+                logging.info(f"Strategy '{strategy}' error: {e}")
+                continue
+        
+        # If all strategies fail
+        raise HTTPException(status_code=500, detail="All download methods failed. YouTube may be blocking requests.")
             
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Streaming error: {e}")
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+async def attempt_download(search_query: str, filename: str):
+    """Attempt download with a specific search strategy"""
+    import tempfile
+    import uuid
+    
+    temp_dir = f"temp_{uuid.uuid4().hex}"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': f'{temp_dir}/audio.%(ext)s',
+        'quiet': True,
+        'no_warnings': True,
+        'ignoreerrors': True,
+        'no_check_certificate': True,
+        'extract_flat': False,
+        'socket_timeout': 30,
+        'retries': 3,
+        
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+        },
+    }
+    
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            # Test search first
+            logging.info(f"Testing search with: {search_query}")
+            info = ydl.extract_info(search_query, download=False)
+            
+            if not info:
+                return None
+            
+            # Check if we have valid results
+            if 'entries' in info:
+                entries = [e for e in info['entries'] if e and (e.get('webpage_url') or e.get('url'))]
+                if not entries:
+                    return None
+                
+                # Use the first valid entry
+                video_info = entries[0]
+                video_url = video_info.get('webpage_url') or video_info.get('url')
+            else:
+                # Single result
+                if not info.get('webpage_url') and not info.get('url'):
+                    return None
+                video_url = info.get('webpage_url') or info.get('url')
+            
+            if not video_url:
+                return None
+            
+            logging.info(f"Found valid video, downloading: {video_url}")
+            
+            # Now download
+            download_result = ydl.extract_info(video_url, download=True)
+            
+            if not download_result:
+                return None
+            
+            # Find the downloaded file
+            mp3_file = None
+            for file in os.listdir(temp_dir):
+                if file.endswith('.mp3'):
+                    mp3_file = os.path.join(temp_dir, file)
+                    break
+            
+            if not mp3_file or not os.path.exists(mp3_file):
+                return None
+            
+            # Read and return the file
+            with open(mp3_file, 'rb') as f:
+                file_content = f.read()
+            
+            # Cleanup
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            from io import BytesIO
+            return StreamingResponse(
+                BytesIO(file_content),
+                media_type="audio/mpeg",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Type": "audio/mpeg",
+                }
+            )
+            
+    except Exception as e:
+        # Cleanup on error
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise e
 
 # Spotify Callback Handler
 @app.get("/callback")
