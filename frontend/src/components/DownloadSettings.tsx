@@ -18,21 +18,27 @@ const DownloadSettings = ({
   const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0 });
   const [isDownloading, setIsDownloading] = useState(false);
 
-  const handleDownloadTrack = async (track: TrackItem) => {
-    try {
-      const response = await apiClient.post(
-        "/stream-track", 
-        {
-          track_name: track.name,
-          artist: track.artists[0].name
-        },
-        {
-          responseType: "blob",
-          timeout: 300000 // 5 minutes timeout
-        }
-      );
-      
-      // Create download link
+const handleDownloadTrack = async (track: TrackItem) => {
+  try {
+    const response = await apiClient.post(
+      "/stream-track", 
+      {
+        track_name: track.name,
+        artist: track.artists[0].name
+      },
+      {
+        responseType: "blob",
+        timeout: 300000 // 5 minutes timeout
+      }
+    );
+    
+    // Check if we actually got data
+    if (response.data.size === 0) {
+      console.error("Empty file received");
+      return false;
+    }
+    
+    // Create download link
     const url = window.URL.createObjectURL(new Blob([response.data]));
     const link = document.createElement("a");
     link.href = url;
@@ -41,15 +47,19 @@ const DownloadSettings = ({
     document.body.appendChild(link);
     link.click();
     
-    // Clean up after a delay
+    // Clean up
     setTimeout(() => {
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
     }, 1000);
     
     return true;
-  } catch (error) {
+  } catch (error: any) {
     console.error("Download error:", error);
+    // Log specific error details
+    if (error.response) {
+      console.error("Response error:", error.response.data);
+    }
     return false;
   }
 };
