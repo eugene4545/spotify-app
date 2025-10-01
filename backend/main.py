@@ -142,7 +142,7 @@ async def test_download():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Stream a track directly from YouTube to client"""
+    """Stream a track directly from YouTube to client without saving to disk"""
     try:
         # Search YouTube
         search_query = urllib.parse.quote(f"{req.track_name} {req.artist} official")
@@ -161,49 +161,29 @@ async def stream_track(req: StreamRequest):
         if not video_url:
             raise HTTPException(status_code=404, detail="No YouTube video found")
         
-        tmp_dir = tempfile.mkdtemp()
-        tmp_path = os.path.join(tmp_dir, "%(title)s.%(ext)s")
-
-        # Setup yt-dlp options for direct streaming
+        # Setup yt-dlp options for direct streaming (NO FILE OUTPUT)
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': tmp_path,
             'noplaylist': True,
-    #         'http_headers': {
-    #         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    #         'Accept': '*/*',
-    #         'Accept-Language': 'en-US,en;q=0.5',
-    #         'Referer': 'https://www.youtube.com/',
-    # },
-    'postprocessors': [{
-        'key': 'FFmpegExtractAudio',
-        'preferredcodec': 'mp3',
-        'preferredquality': '192',
-    }],
-    'quiet': True,
-    'socket_timeout': 60,
-    'nocheckcertificate': True,
-    'progress_hooks': [ api._create_progress_hook()],
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 60,
+            'nocheckcertificate': True,
         }
         
         with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
-            audio_url = info['url']
+            info = ydl.extract_info(video_url, download=False)  # Don't download, just get info
+            audio_url = info['url']  # Get direct audio URL
         
         # Generate filename
-        # filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
-        filename = ydl.prepare_filename(info).rsplit(".", 1)[0] + ".mp3"
-
-        return FileResponse(
-      path=filename,
-      media_type="audio/mpeg",
-      filename=os.path.basename(filename),
-    )
-        # Create generator function for streaming
-        def generate():
-            with httpx.stream("GET", audio_url, timeout=60.0) as response:
-                for chunk in response.iter_bytes():
-                    yield chunk
+        filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
+        
+        # Stream directly from YouTube to client
+        async def generate():
+            async with httpx.AsyncClient() as client:
+                async with client.stream("GET", audio_url, timeout=60.0) as response:
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
         
         return StreamingResponse(
             generate(),
@@ -212,7 +192,6 @@ async def stream_track(req: StreamRequest):
                 "Content-Disposition": f'attachment; filename="{filename}"',
                 "Content-Type": "audio/mpeg",
                 "Cache-Control": "no-cache",
-                "Accept-Ranges": "bytes"
             }
         )
             
