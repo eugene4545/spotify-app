@@ -3,7 +3,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.responses import JSONResponse
-from io import BytesIO
+import io
 import shutil
 import uuid
 import time
@@ -226,11 +226,16 @@ async def stream_track_direct(req: StreamRequest):
         # Try multiple search strategies
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': '-',
+            'outtmpl': '-',  # Output to stdout
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
             'extractaudio': True,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
         }
         
         with YoutubeDL(ydl_opts) as ydl:
@@ -240,13 +245,8 @@ async def stream_track_direct(req: StreamRequest):
                 if info and 'entries' in info and info['entries']:
                     video_url = info['entries'][0]['webpage_url']
                     
-                    # Download directly
-                    result = ydl.extract_info(video_url, download=True)
-                    if hasattr(result, 'read'):
-                        audio_data = result.read()
-                    else:
-                        # Handle different return types
-                        raise Exception("Unexpected download result")
+                    # Download directly to memory
+                    audio_data = ydl.extract_info(video_url, download=True)
                     
                     return StreamingResponse(
                         io.BytesIO(audio_data),
@@ -261,6 +261,55 @@ async def stream_track_direct(req: StreamRequest):
     except Exception as e:
         logging.error(f"Direct streaming error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/stream-track-simple")
+async def stream_track_simple(req: StreamRequest):
+    """Simple streaming endpoint with timeout handling"""
+    try:
+        search_query = f"{req.track_name} {req.artist} audio"
+        filename = f"{req.artist} - {req.track_name}.mp3"
+        
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': '-',
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+            'extractaudio': True,
+            'audioformat': 'mp3',
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+        }
+        
+        # Use asyncio to handle timeouts
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                info = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None, 
+                        lambda: ydl.extract_info(f"ytsearch1:{search_query}", download=True)
+                    ),
+                    timeout=30.0  # 30 second timeout
+                )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=408, detail="Download timeout")
+        
+        if not info:
+            raise HTTPException(status_code=404, detail="No audio found")
+            
+        # Return the audio data
+        return StreamingResponse(
+            io.BytesIO(info),
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Simple streaming error: {e}")
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 # Spotify Callback Handler
 @app.get("/callback")
@@ -328,6 +377,14 @@ async def debug_search(req: StreamRequest):
             "success": False,
             "error": str(e)
         }
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "Spotify Downloader API is running"}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": time.time()}
 
 # New authentication check endpoint
 @app.get("/api/check-auth")

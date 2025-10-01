@@ -32,7 +32,8 @@ class SpotifyDownloaderAPI:
         self.sp_oauth = None
         self.sp = None
 
-        self.temp_download_path = None
+        self.temp_download_path = tempfile.mkdtemp()
+        logging.info(f"Created temp download directory: {self.temp_download_path}")
 
         
           # Make sure temp_download_path exists
