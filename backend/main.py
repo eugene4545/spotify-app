@@ -1,8 +1,11 @@
 # backend/main.py
-from fastapi import FastAPI, Request, HTTPException, BackgroundTask
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.responses import JSONResponse
+from io import BytesIO
+import shutil
+import uuid
 import time
 import json
 from fastapi.responses import StreamingResponse
@@ -143,18 +146,20 @@ async def test_download():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Robust download approach with proper error handling"""
+    """Simplified download approach without BackgroundTask"""
     try:
         search_query = f"{req.track_name} {req.artist}"
         filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
         
-        # Create downloads directory
-        os.makedirs('downloads', exist_ok=True)
+        # Create temporary directory for this request
+        import uuid
+        temp_dir = f"temp_{uuid.uuid4().hex}"
+        os.makedirs(temp_dir, exist_ok=True)
         
         # yt-dlp configuration
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': 'downloads/%(title)s.%(ext)s',
+            'outtmpl': f'{temp_dir}/%(title)s.%(ext)s',
             'quiet': False,  # Show logs for debugging
             'no_warnings': False,
             'ignoreerrors': True,
@@ -176,15 +181,6 @@ async def stream_track(req: StreamRequest):
                 'Referer': 'https://www.youtube.com/',
             },
         }
-        
-        def cleanup_file(file_path):
-            """Clean up downloaded file after sending"""
-            try:
-                if os.path.exists(file_path):
-                    os.unlink(file_path)
-                    logging.info(f"Cleaned up: {file_path}")
-            except Exception as e:
-                logging.error(f"Cleanup error: {e}")
         
         with YoutubeDL(ydl_opts) as ydl:
             try:
@@ -219,34 +215,40 @@ async def stream_track(req: StreamRequest):
                 original_filename = ydl.prepare_filename(download_result)
                 mp3_filename = original_filename.replace('.webm', '.mp3').replace('.m4a', '.mp3')
                 
-                # If the file doesn't exist with expected name, look for any .mp3 file
+                # If the file doesn't exist with expected name, look for any .mp3 file in temp dir
                 if not os.path.exists(mp3_filename):
-                    # Search for the actual file
-                    base_name = os.path.basename(original_filename).split('.')[0]
-                    for file in os.listdir('downloads'):
-                        if file.startswith(base_name) and file.endswith('.mp3'):
-                            mp3_filename = os.path.join('downloads', file)
+                    for file in os.listdir(temp_dir):
+                        if file.endswith('.mp3'):
+                            mp3_filename = os.path.join(temp_dir, file)
                             break
                     else:
-                        # No file found, check if original exists (might be already converted)
-                        if os.path.exists(original_filename):
-                            mp3_filename = original_filename
-                        else:
-                            raise HTTPException(status_code=500, detail="Downloaded file not found")
+                        raise HTTPException(status_code=500, detail="Downloaded file not found")
                 
                 logging.info(f"Sending file: {mp3_filename}")
                 
-                # Return the file with cleanup
-                return FileResponse(
-                    mp3_filename,
-                    media_type='audio/mpeg',
-                    filename=filename,
-                    background=BackgroundTask(cleanup_file, mp3_filename)
+                # Read file content and clean up immediately
+                with open(mp3_filename, 'rb') as f:
+                    file_content = f.read()
+                
+                # Clean up temporary directory
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                
+                # Return the file content as streaming response
+                from io import BytesIO
+                return StreamingResponse(
+                    BytesIO(file_content),
+                    media_type="audio/mpeg",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"',
+                        "Content-Type": "audio/mpeg",
+                    }
                 )
                 
-            except HTTPException:
-                raise
             except Exception as e:
+                # Clean up on error
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
                 logging.error(f"Download error: {str(e)}")
                 raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
             
