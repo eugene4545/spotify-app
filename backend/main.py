@@ -37,7 +37,8 @@ auth_event = asyncio.Event()
 # CORS Configuration
 origins = ["http://localhost:5173",
            "http://127.0.0.1:5173",
-           "https://spotify-offline-app.onrender.com",
+           "https://spotify-app-1lrn.onrender.com",
+           "https://spotify-app-backend-yqzt.onrender.com"
            ]
 app.add_middleware(
     CORSMiddleware,

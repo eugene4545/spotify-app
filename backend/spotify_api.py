@@ -21,7 +21,7 @@ class SpotifyDownloaderAPI:
     def __init__(self):
         self.client_id = None
         self.client_secret = None
-        self.redirect_uri = "http://127.0.0.1:8000/callback"
+        self.redirect_uri = os.getenv("REDIRECT_URI", "http://127.0.0.1:8000/callback")
         self.credentials_set = False
         
         
