@@ -1,5 +1,5 @@
 # backend/main.py
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.responses import JSONResponse
@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 import os
 from fastapi.responses import FileResponse
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import atexit
 import platform
@@ -142,64 +143,113 @@ async def test_download():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Simple direct download approach"""
+    """Robust download approach with proper error handling"""
     try:
         search_query = f"{req.track_name} {req.artist}"
         filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
         
-        # Simple yt-dlp configuration
+        # Create downloads directory
+        os.makedirs('downloads', exist_ok=True)
+        
+        # yt-dlp configuration
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': '%(title)s.%(ext)s',
-            'quiet': False,  # Set to False to see debug info
+            'outtmpl': 'downloads/%(title)s.%(ext)s',
+            'quiet': False,  # Show logs for debugging
             'no_warnings': False,
             'ignoreerrors': True,
             'no_check_certificate': True,
+            'extract_flat': False,
             
-            # Audio conversion
+            # Postprocessor for audio conversion
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
             
-            # Basic headers
+            # Headers to avoid bot detection
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.youtube.com/',
             },
         }
         
+        def cleanup_file(file_path):
+            """Clean up downloaded file after sending"""
+            try:
+                if os.path.exists(file_path):
+                    os.unlink(file_path)
+                    logging.info(f"Cleaned up: {file_path}")
+            except Exception as e:
+                logging.error(f"Cleanup error: {e}")
+        
         with YoutubeDL(ydl_opts) as ydl:
             try:
-                # Get video info first
-                info = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
-                if not info or 'entries' not in info or not info['entries']:
-                    raise HTTPException(status_code=404, detail="No video found")
+                logging.info(f"Searching for: {search_query}")
                 
-                video_url = info['entries'][0]['webpage_url']
+                # Search for the video
+                search_result = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
+                
+                if not search_result:
+                    raise HTTPException(status_code=404, detail="No search results found")
+                
+                if 'entries' not in search_result or not search_result['entries']:
+                    raise HTTPException(status_code=404, detail="No videos found in search results")
+                
+                video_info = search_result['entries'][0]
+                if not video_info:
+                    raise HTTPException(status_code=404, detail="First video result is invalid")
+                
+                video_url = video_info.get('webpage_url') or video_info.get('url')
+                if not video_url:
+                    raise HTTPException(status_code=404, detail="Could not get video URL")
+                
                 logging.info(f"Found video: {video_url}")
                 
-                # Now download it
-                result = ydl.extract_info(video_url, download=True)
-                downloaded_file = ydl.prepare_filename(result).replace('.webm', '.mp3').replace('.m4a', '.mp3')
+                # Download the video
+                download_result = ydl.extract_info(video_url, download=True)
                 
-                if not os.path.exists(downloaded_file):
-                    raise HTTPException(status_code=500, detail="Downloaded file not found")
+                if not download_result:
+                    raise HTTPException(status_code=500, detail="Download failed - no result")
                 
-                # Return the file
+                # Get the downloaded file path
+                original_filename = ydl.prepare_filename(download_result)
+                mp3_filename = original_filename.replace('.webm', '.mp3').replace('.m4a', '.mp3')
+                
+                # If the file doesn't exist with expected name, look for any .mp3 file
+                if not os.path.exists(mp3_filename):
+                    # Search for the actual file
+                    base_name = os.path.basename(original_filename).split('.')[0]
+                    for file in os.listdir('downloads'):
+                        if file.startswith(base_name) and file.endswith('.mp3'):
+                            mp3_filename = os.path.join('downloads', file)
+                            break
+                    else:
+                        # No file found, check if original exists (might be already converted)
+                        if os.path.exists(original_filename):
+                            mp3_filename = original_filename
+                        else:
+                            raise HTTPException(status_code=500, detail="Downloaded file not found")
+                
+                logging.info(f"Sending file: {mp3_filename}")
+                
+                # Return the file with cleanup
                 return FileResponse(
-                    downloaded_file,
+                    mp3_filename,
                     media_type='audio/mpeg',
                     filename=filename,
-                    background=BackgroundTask(lambda: os.unlink(downloaded_file) if os.path.exists(downloaded_file) else None)
+                    background=BackgroundTask(cleanup_file, mp3_filename)
                 )
                 
+            except HTTPException:
+                raise
             except Exception as e:
                 logging.error(f"Download error: {str(e)}")
                 raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
             
-    except HTTPException:
-        raise
     except Exception as e:
         logging.error(f"Streaming error: {e}")
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
