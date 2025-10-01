@@ -1,0 +1,2 @@
+/api/* https://spotify-app-backend-yqzt.onrender.com/api/:splat 200
+/callback https://spotify-app-backend-yqzt.onrender.com/callback 200

@@ -1,10 +1,17 @@
-import { useState } from 'react';
-import axios from 'axios';
+import { useState } from "react";
+import axios from "axios";
 
-const SetupSection = ({ onCredentialsSaved }: { onCredentialsSaved: () => void }) => {
-  const [clientId, setClientId] = useState('');
-  const [clientSecret, setClientSecret] = useState('');
-  const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+const SetupSection = ({
+  onCredentialsSaved,
+}: {
+  onCredentialsSaved: () => void;
+}) => {
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [message, setMessage] = useState<{
+    text: string;
+    type: "success" | "error";
+  } | null>(null);
 
   const handleSave = async () => {
     try {
@@ -12,35 +19,39 @@ const SetupSection = ({ onCredentialsSaved }: { onCredentialsSaved: () => void }
         success: boolean;
         message?: string;
         error?: string;
-      }>('/api/save-credentials', {
+      }>("/save-credentials", {
         client_id: clientId,
-        client_secret: clientSecret
+        client_secret: clientSecret,
       });
-      
+
       if (response.data.success) {
-        setMessage({ text: response.data.message || 'Credentials saved successfully!', type: 'success' });
+        setMessage({
+          text: response.data.message || "Credentials saved successfully!",
+          type: "success",
+        });
         setTimeout(onCredentialsSaved, 1500);
       } else {
-        setMessage({ 
-          text: response.data.error || 'Authentication failed', 
-          type: 'error' 
+        setMessage({
+          text: response.data.error || "Authentication failed",
+          type: "error",
         });
       }
     } catch (caughtError) {
-      let errorMessage = 'Error saving credentials: ';
-      
+      let errorMessage = "Error saving credentials: ";
+
       if (axios.isAxiosError(caughtError)) {
         // Handle Axios-specific errors
-        errorMessage += caughtError.response?.data?.error || caughtError.message;
+        errorMessage +=
+          caughtError.response?.data?.error || caughtError.message;
       } else if (caughtError instanceof Error) {
         // Handle standard JavaScript errors
         errorMessage += caughtError.message;
       } else {
         // Handle unknown error types
-        errorMessage += 'Unknown error occurred';
+        errorMessage += "Unknown error occurred";
       }
-      
-      setMessage({ text: errorMessage, type: 'error' });
+
+      setMessage({ text: errorMessage, type: "error" });
     }
   };
 
@@ -51,16 +62,17 @@ const SetupSection = ({ onCredentialsSaved }: { onCredentialsSaved: () => void }
           API Setup Required
         </h2>
         <p className="text-gray-300 mb-6 text-center">
-          To use this application, you need to provide your Spotify API credentials.
+          To use this application, you need to provide your Spotify API
+          credentials.
         </p>
-        
+
         <div className="mb-6">
-          <h3 className="text-lg font-semibold mb-4">
-            Enter Your Credentials
-          </h3>
+          <h3 className="text-lg font-semibold mb-4">Enter Your Credentials</h3>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium mb-2">Client ID</label>
+              <label className="block text-sm font-medium mb-2">
+                Client ID
+              </label>
               <input
                 type="text"
                 value={clientId}
@@ -70,7 +82,9 @@ const SetupSection = ({ onCredentialsSaved }: { onCredentialsSaved: () => void }
               />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-2">Client Secret</label>
+              <label className="block text-sm font-medium mb-2">
+                Client Secret
+              </label>
               <input
                 type="password"
                 value={clientSecret}
@@ -89,15 +103,22 @@ const SetupSection = ({ onCredentialsSaved }: { onCredentialsSaved: () => void }
             </div>
           </div>
         </div>
-        
+
         {message && (
-          <div className={`mt-4 p-3 rounded-lg ${message.type === 'success' ? 'bg-green-600' : 'bg-red-600'}`}>
+          <div
+            className={`mt-4 p-3 rounded-lg ${
+              message.type === "success" ? "bg-green-600" : "bg-red-600"
+            }`}
+          >
             {message.text}
           </div>
         )}
-        
+
         <div className="text-center text-sm text-gray-400">
-          <p>Your credentials are stored locally and only used to authenticate with Spotify's API.</p>
+          <p>
+            Your credentials are stored locally and only used to authenticate
+            with Spotify's API.
+          </p>
         </div>
       </div>
     </div>

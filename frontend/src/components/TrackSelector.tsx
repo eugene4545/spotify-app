@@ -21,7 +21,7 @@ const TrackSelector = ({
     const fetchTracks = async () => {
       try {
         setIsLoading(true);
-        const response = await axios.post<{
+        const response = await apiClient.post<{
           success: boolean;
           tracks?: Track[];
           error?: string;
