@@ -146,31 +146,68 @@ async def test_download():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Try multiple audio sources"""
+    """Stream track directly without saving to filesystem"""
     try:
-        search_query = f"{req.track_name} {req.artist}"
-        filename = api.sanitize_filename(f"{req.artist} - {req.track_name}.mp3")
+        search_query = f"{req.track_name} {req.artist} official audio"
         
-        # Try YouTube first
-        try:
-            result = await download_from_youtube(search_query, filename)
-            if result:
-                return result
-        except Exception as e:
-            logging.warning(f"YouTube download failed: {e}")
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': '-',  # Output to stdout
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+            'extractaudio': True,
+            'audioformat': 'mp3',
+            'audioquality': '5',  # 0-9, 0 is best
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+        }
         
-        # Fallback to SoundCloud
-        try:
-            result = await download_from_soundcloud(search_query, filename)
-            if result:
-                return result
-        except Exception as e:
-            logging.warning(f"SoundCloud download failed: {e}")
+        # Use BytesIO to capture audio data in memory
+        import io
+        audio_buffer = io.BytesIO()
         
-        # Final fallback - return error with suggestions
-        raise HTTPException(
-            status_code=500, 
-            detail="Unable to download track. This may be due to YouTube restrictions. Try again later or use a different track."
+        def progress_hook(d):
+            if d['status'] == 'finished':
+                logging.info(f"Download finished: {d['filename']}")
+        
+        ydl_opts['progress_hooks'] = [progress_hook]
+        
+        with YoutubeDL(ydl_opts) as ydl:
+            # Search and get info first
+            info = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
+            if not info or 'entries' not in info or not info['entries']:
+                raise HTTPException(status_code=404, detail="No audio found")
+            
+            # Get the first result
+            video_info = info['entries'][0]
+            video_url = video_info['url'] if 'url' in video_info else video_info['webpage_url']
+            
+            # Download to memory buffer
+            def download_to_buffer():
+                with YoutubeDL(ydl_opts) as ydl_download:
+                    ydl_download.download([video_url])
+            
+            # Use thread pool for async download
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(download_to_buffer)
+                # Wait for download with timeout
+                try:
+                    future.result(timeout=45)  # 45 second timeout
+                except concurrent.futures.TimeoutError:
+                    raise HTTPException(status_code=408, detail="Download timeout")
+            
+        filename = f"{req.artist} - {req.track_name}.mp3"
+        
+        return StreamingResponse(
+            io.BytesIO(audio_buffer.getvalue()),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Type": "audio/mpeg",
+            }
         )
             
     except HTTPException:
@@ -178,68 +215,6 @@ async def stream_track(req: StreamRequest):
     except Exception as e:
         logging.error(f"Streaming error: {e}")
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
-
-async def download_from_soundcloud(search_query: str, filename: str):
-    """Fallback to SoundCloud"""
-    try:
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': '-',
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        }
-        
-        with YoutubeDL(ydl_opts) as ydl:
-            # SoundCloud search
-            info = ydl.extract_info(f"scsearch:{search_query}", download=False)
-            
-            if not info or 'entries' not in info or not info['entries']:
-                return None
-            
-            # Download first result
-            import tempfile
-            import shutil
-            
-            temp_dir = tempfile.mkdtemp()
-            ydl_opts['outtmpl'] = f'{temp_dir}/audio.%(ext)s'
-            
-            with YoutubeDL(ydl_opts) as ydl_download:
-                download_result = ydl_download.extract_info(
-                    info['entries'][0]['webpage_url'], 
-                    download=True
-                )
-                
-                # Find and return the file
-                for file in os.listdir(temp_dir):
-                    if file.endswith('.mp3'):
-                        with open(os.path.join(temp_dir, file), 'rb') as f:
-                            content = f.read()
-                        
-                        shutil.rmtree(temp_dir, ignore_errors=True)
-                        
-                        from io import BytesIO
-                        return StreamingResponse(
-                            BytesIO(content),
-                            media_type="audio/mpeg",
-                            headers={
-                                "Content-Disposition": f'attachment; filename="{filename}"',
-                                "Content-Type": "audio/mpeg",
-                            }
-                        )
-            
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return None
-            
-    except Exception as e:
-        logging.error(f"SoundCloud error: {e}")
-        return None
 
 # Spotify Callback Handler
 @app.get("/callback")
@@ -256,6 +231,57 @@ async def spotify_callback(request: Request):
     except Exception as e:
         logging.error(f"Authentication error: {e}")
         return {"status": "error", "message": str(e)}
+    
+#debug
+@app.post("/api/debug-search")
+async def debug_search(req: StreamRequest):
+    """Debug endpoint to test search functionality"""
+    try:
+        search_query = f"{req.track_name} {req.artist}"
+        
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': False,  # Show all logs
+            'no_warnings': False,
+            'ignoreerrors': True,
+            'no_check_certificate': True,
+            'extract_flat': True,  # Get info without downloading
+        }
+        
+        results = {}
+        
+        # Test different search strategies
+        strategies = {
+            "ytsearch1": f"ytsearch1:{search_query}",
+            "ytsearch10": f"ytsearch10:{search_query}",
+            "scsearch": f"scsearch1:{search_query}",
+        }
+        
+        for strategy_name, strategy_query in strategies.items():
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(strategy_query, download=False)
+                    results[strategy_name] = {
+                        "success": True,
+                        "result_count": len(info.get('entries', [])) if info else 0,
+                        "first_result": info.get('entries', [{}])[0] if info and info.get('entries') else None
+                    }
+            except Exception as e:
+                results[strategy_name] = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
+        return {
+            "search_query": search_query,
+            "results": results
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 # New authentication check endpoint
 @app.get("/api/check-auth")
