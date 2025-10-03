@@ -32,10 +32,9 @@ class SpotifyDownloaderAPI:
         self.sp_oauth = None
         self.sp = None
 
-        self.temp_download_path = os.path.join(str(Path.home()), "spotify_downloads_temp")
-        logging.info(f"Created persistent temp download directory: {self.temp_download_path}")
+        self.temp_download_path = tempfile.mkdtemp()
+        logging.info(f"Created temp download directory: {self.temp_download_path}")
 
-        self.download_path = self.temp_download_path  # Use temp dir
         
           # Make sure temp_download_path exists
         os.makedirs(self.temp_download_path, exist_ok=True)
@@ -384,97 +383,97 @@ class SpotifyDownloaderAPI:
             return {"error": "Download already in progress"}
 
     def download_track(self, track_info: Dict, download_folder: str) -> bool:
-        try:
-            track = track_info['track']
-            if not track or track['type'] != 'track':
-                return False 
+        # try:
+        #     track = track_info['track']
+        #     if not track or track['type'] != 'track':
+        #         return False 
                 
-            artist_name = track['artists'][0]['name']
-            track_name = track['name']
+        #     artist_name = track['artists'][0]['name']
+        #     track_name = track['name']
             
-            sanitized_name = self.sanitize_filename(f"{artist_name} - {track_name}")
-            final_file = os.path.join(self.temp_download_path, f"{sanitized_name}.mp3")
+        #     sanitized_name = self.sanitize_filename(f"{artist_name} - {track_name}")
+        #     final_file = os.path.join(self.temp_download_path, f"{sanitized_name}.mp3")
 
-            logging.info(f"Saving track to: {final_file}")
+        #     logging.info(f"Saving track to: {final_file}")
 
-            # Skip if already exists
-            # if os.path.exists(final_file) and not final_file.endswith('.part'):
-            #     logging.info(f"Skipping existing file: {sanitized_name}")
-            # return True
+        #     # Skip if already exists
+        #     # if os.path.exists(final_file) and not final_file.endswith('.part'):
+        #     #     logging.info(f"Skipping existing file: {sanitized_name}")
+        #     # return True
                 
-            # Search YouTube
-            search_query = urllib.parse.quote(f"{track_name} {artist_name} official")
-            try:
-                html = urllib.request.urlopen(f"https://www.youtube.com/results?search_query={search_query}")
-                video_ids = re.findall(r"watch\?v=(\S{11})", html.read().decode())
-            except Exception as e:
-                logging.warning(f"Error searching YouTube for {sanitized_name}: {e}")
-                return False
+        #     # Search YouTube
+        #     search_query = urllib.parse.quote(f"{track_name} {artist_name} official")
+        #     try:
+        #         html = urllib.request.urlopen(f"https://www.youtube.com/results?search_query={search_query}")
+        #         video_ids = re.findall(r"watch\?v=(\S{11})", html.read().decode())
+        #     except Exception as e:
+        #         logging.warning(f"Error searching YouTube for {sanitized_name}: {e}")
+        #         return False
             
-            if not video_ids:
-                logging.warning(f"No YouTube videos found for: {sanitized_name}")
-                return False
+        #     if not video_ids:
+        #         logging.warning(f"No YouTube videos found for: {sanitized_name}")
+        #         return False
                 
-            if not self.is_downloading:
-                return False
+        #     if not self.is_downloading:
+        #         return False
                 
-            # Try downloading from YouTube with improved options
-            for video_id in video_ids[:3]:  # Try first 3 results
-                try:
-                    if not self.is_downloading:
-                        return False
+        #     # Try downloading from YouTube with improved options
+        #     for video_id in video_ids[:3]:  # Try first 3 results
+        #         try:
+        #             if not self.is_downloading:
+        #                 return False
                         
-                    video_url = f"https://www.youtube.com/watch?v={video_id}"
+        #             video_url = f"https://www.youtube.com/watch?v={video_id}"
                     
-                    ydl_opts = {
-                        'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
-                        'outtmpl': f'{self.temp_download_path}/%(title)s.%(ext)s',
-                        'noplaylist': True,
-                        'quiet': True,
-                        'no_warnings': True,
-                        'ignoreerrors': True,
-                        'extract_flat': False,
-                        'continuedl': True,
-                        'writethumbnail': False,
-                        'writeinfojson': False,
-                        'cookiefile': None,
-                        'extractor_args': {
-                            'youtube': {
-                                'player_client': ['android', 'web'],
-                                'skip': ['hls', 'dash'],
-                            }
-                        },
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                        },
-                        'postprocessors': [{
-                            'key': 'FFmpegExtractAudio',
-                            'preferredcodec': 'mp3',
-                            'preferredquality': '192',
-                        }],
-                        'progress_hooks': [self._create_progress_hook()],
-                        'timeout': 60
-                    }
+        #             ydl_opts = {
+        #                 'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+        #                 'outtmpl': f'{self.temp_download_path}/%(title)s.%(ext)s',
+        #                 'noplaylist': True,
+        #                 'quiet': True,
+        #                 'no_warnings': True,
+        #                 'ignoreerrors': True,
+        #                 'extract_flat': False,
+        #                 'continuedl': True,
+        #                 'writethumbnail': False,
+        #                 'writeinfojson': False,
+        #                 'cookiefile': None,
+        #                 'extractor_args': {
+        #                     'youtube': {
+        #                         'player_client': ['android', 'web'],
+        #                         'skip': ['hls', 'dash'],
+        #                     }
+        #                 },
+        #                 'http_headers': {
+        #                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        #                 },
+        #                 'postprocessors': [{
+        #                     'key': 'FFmpegExtractAudio',
+        #                     'preferredcodec': 'mp3',
+        #                     'preferredquality': '192',
+        #                 }],
+        #                 'progress_hooks': [self._create_progress_hook()],
+        #                 'timeout': 60
+        #             }
                     
-                    with YoutubeDL(ydl_opts) as ydl:
-                        if not self.is_downloading:
-                            return False
-                        ydl.download([video_url])
-                        logging.info(f"Downloaded: {sanitized_name}")
-                        return True
+        #             with YoutubeDL(ydl_opts) as ydl:
+        #                 if not self.is_downloading:
+        #                     return False
+        #                 ydl.download([video_url])
+        #                 logging.info(f"Downloaded: {sanitized_name}")
+        #                 return True
                         
-                except DownloadInterrupted:
-                    logging.info(f"Download interrupted for: {sanitized_name}")
-                    return False
-                except Exception as e:
-                    logging.warning(f"Error downloading video {video_id}: {e}")
-                    continue
+        #         except DownloadInterrupted:
+        #             logging.info(f"Download interrupted for: {sanitized_name}")
+        #             return False
+        #         except Exception as e:
+        #             logging.warning(f"Error downloading video {video_id}: {e}")
+        #             continue
                     
-            return False
+        #     return False
             
-        except Exception as e:
-            logging.error(f"Error downloading track: {e}")
-            return False
+        # except Exception as e:
+        #     logging.error(f"Error downloading track: {e}")
+            return True
 
     def _create_progress_hook(self):
         def progress_hook(d):

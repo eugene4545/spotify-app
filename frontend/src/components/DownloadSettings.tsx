@@ -20,9 +20,10 @@ const DownloadSettings = ({
 
 const handleDownloadTrack = async (track: TrackItem) => {
   try {
-    // Try direct download first
+    console.log(`Starting download: ${track.artists[0].name} - ${track.name}`);
+    
     const response = await fetch(
-      `https://spotify-app-backend-yqzt.onrender.com/api/stream-track`,
+      `https://spotify-app-backend-yqzt.onrender.com/api/stream-track-simple`,
       {
         method: 'POST',
         headers: {
@@ -36,28 +37,68 @@ const handleDownloadTrack = async (track: TrackItem) => {
     );
     
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      const errorText = await response.text();
+      console.error(`Server error: ${response.status}`, errorText);
+      throw new Error(`Download failed: ${response.status} - ${errorText}`);
     }
     
     const blob = await response.blob();
+    console.log(`Received blob: ${blob.size} bytes, type: ${blob.type}`);
     
     if (blob.size === 0) {
-      throw new Error("Empty file received");
+      throw new Error("Empty file received - download may have timed out");
     }
     
+    // Create download
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
     link.download = `${track.artists[0].name} - ${track.name}.mp3`;
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
     window.URL.revokeObjectURL(url);
     
+    console.log(`Download completed: ${track.name}`);
     return true;
   } catch (error) {
     console.error("Download failed:", error);
     return false;
   }
 };
+
+// const handleDownloadTrackAlternative = async (track: TrackItem) => {
+//   try {
+//     const response = await fetch(
+//       `https://spotify-app-backend-yqzt.onrender.com/api/stream-track-direct`,
+//       {
+//         method: 'POST',
+//         headers: {
+//           'Content-Type': 'application/json',
+//         },
+//         body: JSON.stringify({
+//           track_name: track.name,
+//           artist: track.artists[0].name
+//         })
+//       }
+//     );
+    
+//     if (!response.ok) throw new Error(`Alternative download failed: ${response.status}`);
+    
+//     const blob = await response.blob();
+//     const url = window.URL.createObjectURL(blob);
+//     const link = document.createElement("a");
+//     link.href = url;
+//     link.download = `${track.artists[0].name} - ${track.name}.mp3`;
+//     link.click();
+//     window.URL.revokeObjectURL(url);
+    
+//     return true;
+//   } catch (error) {
+//     console.error("Alternative download also failed:", error);
+//     return false;
+//   }
+// };
   const handleStartDownload = async () => {
     setIsDownloading(true);
     setIsLoading(true);
