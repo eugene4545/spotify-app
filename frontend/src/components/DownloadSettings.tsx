@@ -35,8 +35,6 @@ const handleDownloadTrack = async (track: TrackItem) => {
     );
     
     if (!response.ok) {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const errorText = await response.text();
       throw new Error(`Download failed: ${response.status}`);
     }
     
