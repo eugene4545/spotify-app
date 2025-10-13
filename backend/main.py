@@ -141,266 +141,234 @@ async def test_download_single():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Enhanced streaming with multiple fallback sources and better error handling"""
+    """Enhanced streaming that actually works"""
     try:
         search_query = f"{req.track_name} {req.artist}"
         filename = f"{req.artist} - {req.track_name}.mp3"
         filename = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '.')).rstrip()
 
-        # Strategy 1: Try direct URL download from common sources
-        async def try_direct_sources():
-            sources = [
-                f"https://soundcloud.com/search?q={urllib.parse.quote(search_query)}",
-                f"https://www.jamendo.com/search?qs=search&q={urllib.parse.quote(search_query)}",
-            ]
-            
-            for source_url in sources:
-                try:
-                    ydl_opts = {
-                        'format': 'bestaudio/best',
-                        'outtmpl': '-',
-                        'quiet': True,
-                        'no_warnings': True,
-                        'noplaylist': True,
-                        'extract_flat': False,
-                        'socket_timeout': 15,
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                            'Accept-Language': 'en-us,en;q=0.5',
-                            'Sec-Fetch-Mode': 'navigate',
-                        },
-                    }
-                    
-                    with YoutubeDL(ydl_opts) as ydl:
-                        info = await asyncio.wait_for(
-                            asyncio.get_event_loop().run_in_executor(
-                                None, 
-                                lambda: ydl.extract_info(source_url, download=False)
-                            ),
-                            timeout=10.0
-                        )
-                        if info and 'url' in info:
-                            return info['url']
-                except Exception as e:
-                    logging.warning(f"Direct source {source_url} failed: {e}")
-                    continue
-            return None
+        logging.info(f"Attempting to download: {search_query}")
 
-        # Strategy 2: Use alternative search methods
-        async def try_alternative_search():
-            strategies = [
-                # SoundCloud search (most reliable)
-                ("soundcloud", f"scsearch1:{search_query}"),
-                # Bandcamp
-                ("bandcamp", f"bcsearch1:{search_query}"),
-                # Archive.org
-                ("archive", f"https://archive.org/details/{urllib.parse.quote(search_query.replace(' ', '_'))}"),
-                # YouTube Music (different from regular YouTube)
-                ("youtube_music", f"https://music.youtube.com/search?q={urllib.parse.quote(search_query)}"),
-            ]
-            
-            for strategy_name, search_term in strategies:
-                try:
-                    logging.info(f"Trying {strategy_name} search...")
-                    
-                    ydl_opts = {
-                        'format': 'bestaudio/best',
-                        'quiet': True,
-                        'no_warnings': True,
-                        'noplaylist': True,
-                        'extract_flat': False,
-                        'socket_timeout': 20,
-                        'retries': 2,
-                        'fragment_retries': 2,
-                        'skip_unavailable_fragments': True,
-                        'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        },
-                        'geo_bypass': True,
-                        'geo_bypass_country': 'US',
-                    }
-                    
-                    with YoutubeDL(ydl_opts) as ydl:
-                        info = await asyncio.wait_for(
-                            asyncio.get_event_loop().run_in_executor(
-                                None,
-                                lambda: ydl.extract_info(search_term, download=False)
-                            ),
-                            timeout=15.0
-                        )
+        # Create a temporary file to store the download
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+        temp_path = temp_file.name
+        temp_file.close()
+
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': temp_path.replace('.mp3', '.%(ext)s'),
+            'quiet': False,
+            'no_warnings': False,
+            'noplaylist': True,
+            'extract_flat': False,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'socket_timeout': 30,
+            'retries': 10,
+            'fragment_retries': 10,
+            'skip_unavailable_fragments': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+            },
+            'geo_bypass': True,
+            'geo_bypass_country': 'US',
+        }
+
+        # Try different search strategies
+        search_strategies = [
+            # Most reliable first
+            f"ytsearch1:{req.artist} {req.track_name} audio",
+            f"ytsearch1:{req.artist} {req.track_name} official audio",
+            f"ytsearch1:{req.artist} {req.track_name} lyrics",
+            f"ytsearch1:{req.track_name} {req.artist}",
+            f"ytsearch1:{search_query}",
+        ]
+
+        download_successful = False
+        last_error = None
+
+        for strategy in search_strategies:
+            try:
+                logging.info(f"Trying: {strategy}")
+                
+                with YoutubeDL(ydl_opts) as ydl:
+                    # Try to extract and download
+                    await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: ydl.download([strategy])
+                        ),
+                        timeout=60.0  # 60 second timeout per attempt
+                    )
+                
+                # Check if file was created
+                possible_files = [
+                    temp_path,
+                    temp_path.replace('.mp3', '.mp3'),
+                    temp_path.replace('.mp3', '.m4a'),
+                    temp_path.replace('.mp3', '.webm'),
+                ]
+                
+                for possible_file in possible_files:
+                    if os.path.exists(possible_file):
+                        # Read the file
+                        with open(possible_file, 'rb') as f:
+                            audio_data = f.read()
                         
-                        if info:
-                            # Get the actual audio URL
-                            if 'entries' in info and len(info['entries']) > 0:
-                                audio_url = info['entries'][0].get('url')
-                            else:
-                                audio_url = info.get('url')
+                        # Clean up
+                        try:
+                            os.unlink(possible_file)
+                        except:
+                            pass
+                        
+                        if len(audio_data) > 0:
+                            logging.info(f"✅ Successfully downloaded with strategy: {strategy}")
+                            download_successful = True
                             
-                            if audio_url:
-                                logging.info(f"✅ Found audio with {strategy_name}")
-                                
-                                # Download the audio
-                                async with httpx.AsyncClient(timeout=60.0) as client:
-                                    response = await client.get(audio_url)
-                                    if response.status_code == 200:
-                                        return response.content
-                                        
-                except asyncio.TimeoutError:
-                    logging.warning(f"Timeout with {strategy_name}")
-                except Exception as e:
-                    logging.warning(f"Failed with {strategy_name}: {e}")
-                    continue
-            
-            return None
-
-        # Strategy 3: Use a proxy/VPN approach (last resort)
-        async def try_with_proxy():
-            # You can add proxy support here if needed
-            # This would require additional configuration
-            pass
-
-        # Try strategies in order
-        audio_data = None
+                            return StreamingResponse(
+                                io.BytesIO(audio_data),
+                                media_type="audio/mpeg",
+                                headers={
+                                    "Content-Disposition": f'attachment; filename="{filename}"',
+                                }
+                            )
+                
+            except asyncio.TimeoutError:
+                last_error = f"Timeout with strategy: {strategy}"
+                logging.warning(last_error)
+                continue
+            except Exception as e:
+                last_error = str(e)
+                logging.warning(f"Failed with {strategy}: {e}")
+                continue
         
-        # Try alternative search first (most reliable)
-        audio_data = await try_alternative_search()
-        
-        if not audio_data:
-            raise HTTPException(
-                status_code=404, 
-                detail="Unable to find audio source. The track may not be available on free platforms."
-            )
-
-        return StreamingResponse(
-            io.BytesIO(audio_data),
-            media_type="audio/mpeg",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Type": "audio/mpeg",
-            }
+        # If we get here, all strategies failed
+        raise HTTPException(
+            status_code=404,
+            detail=f"Could not download track after trying all methods. Last error: {last_error}"
         )
-            
+
     except HTTPException:
         raise
     except Exception as e:
-        logging.error(f"Stream error: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Download service unavailable: {str(e)}"
-        )
+        logging.error(f"Unexpected error in stream_track: {e}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+    finally:
+        # Cleanup any leftover temp files
+        try:
+            if 'temp_path' in locals():
+                for ext in ['.mp3', '.m4a', '.webm', '.part']:
+                    try:
+                        if os.path.exists(temp_path.replace('.mp3', ext)):
+                            os.unlink(temp_path.replace('.mp3', ext))
+                    except:
+                        pass
+        except:
+            pass
 
 
-# Alternative: Client-side download approach
-@app.post("/api/get-download-info")
-async def get_download_info(req: StreamRequest):
-    """
-    Returns download URLs for client-side downloading
-    This bypasses server IP restrictions
-    """
+# Alternative simpler endpoint for testing
+@app.post("/api/stream-track-simple")
+async def stream_track_simple(req: StreamRequest):
+    """Simplified version that might work better on Render"""
     try:
-        search_query = f"{req.track_name} {req.artist}"
+        search_query = f"{req.artist} {req.track_name} official audio"
+        filename = f"{req.artist} - {req.track_name}.mp3"
         
+        logging.info(f"Simple download attempt: {search_query}")
+        
+        # Use a simpler yt-dlp configuration
         ydl_opts = {
-            'format': 'bestaudio/best',
+            'format': 'worstaudio/worst',  # Use worst quality for faster downloads
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
-            'skip_download': True,  # Don't download, just get info
-        }
-        
-        sources_to_try = [
-            f"scsearch1:{search_query}",
-            f"https://soundcloud.com/search?q={urllib.parse.quote(search_query)}",
-        ]
-        
-        for source in sources_to_try:
-            try:
-                with YoutubeDL(ydl_opts) as ydl:
-                    info = await asyncio.wait_for(
-                        asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: ydl.extract_info(source, download=False)
-                        ),
-                        timeout=10.0
-                    )
-                    
-                    if info:
-                        if 'entries' in info:
-                            info = info['entries'][0]
-                        
-                        return {
-                            "success": True,
-                            "url": info.get('url'),
-                            "title": info.get('title'),
-                            "duration": info.get('duration'),
-                            "source": "soundcloud"
-                        }
-            except Exception as e:
-                logging.warning(f"Failed to get info from {source}: {e}")
-                continue
-        
-        return {
-            "success": False,
-            "error": "No audio source found"
-        }
-        
-    except Exception as e:
-        logging.error(f"Error getting download info: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-@app.post("/api/stream-track-simple")
-async def stream_track_simple(req: StreamRequest):
-    """Simple streaming endpoint with timeout handling"""
-    try:
-        search_query = f"{req.track_name} {req.artist} audio"
-        filename = f"{req.artist} - {req.track_name}.mp3"
-        
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': '-',
-            'quiet': True,
-            'no_warnings': True,
             'noplaylist': True,
-            'extractaudio': True,
-            'audioformat': 'mp3',
+            'prefer_ffmpeg': True,
+            'keepvideo': False,
+            'socket_timeout': 20,
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
             },
         }
         
-        # Use asyncio to handle timeouts
-        try:
+        def download_audio():
             with YoutubeDL(ydl_opts) as ydl:
-                info = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
-                        None, 
-                        lambda: ydl.extract_info(f"ytsearch1:{search_query}", download=True)
-                    ),
-                    timeout=30.0  # 30 second timeout
-                )
-        except asyncio.TimeoutError:
-            raise HTTPException(status_code=408, detail="Download timeout")
+                info = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
+                if info and 'entries' in info and len(info['entries']) > 0:
+                    video = info['entries'][0]
+                    url = video.get('url')
+                    
+                    if url:
+                        # Download the audio directly
+                        import requests
+                        response = requests.get(url, timeout=30, stream=True)
+                        return response.content
+            return None
         
-        if not info:
-            raise HTTPException(status_code=404, detail="No audio found")
-            
-        # Return the audio data
-        return StreamingResponse(
-            io.BytesIO(info),
-            media_type="audio/mpeg",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        audio_data = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, download_audio),
+            timeout=45.0
         )
         
-    except HTTPException:
-        raise
+        if audio_data and len(audio_data) > 0:
+            return StreamingResponse(
+                io.BytesIO(audio_data),
+                media_type="audio/mpeg",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            )
+        else:
+            raise HTTPException(status_code=404, detail="No audio data retrieved")
+            
     except Exception as e:
-        logging.error(f"Simple streaming error: {e}")
-        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+        logging.error(f"Simple stream error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Emergency fallback - return YouTube URL for client-side download
+@app.post("/api/get-youtube-url")
+async def get_youtube_url(req: StreamRequest):
+    """Returns YouTube URL for client-side download"""
+    try:
+        search_query = f"{req.artist} {req.track_name} audio"
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,  # Just get metadata, don't download
+        }
+        
+        with YoutubeDL(ydl_opts) as ydl:
+            info = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: ydl.extract_info(f"ytsearch1:{search_query}", download=False)
+                ),
+                timeout=10.0
+            )
+            
+            if info and 'entries' in info and len(info['entries']) > 0:
+                video = info['entries'][0]
+                return {
+                    "success": True,
+                    "url": f"https://www.youtube.com/watch?v={video['id']}",
+                    "title": video.get('title'),
+                    "id": video.get('id')
+                }
+        
+        return {"success": False, "error": "No results found"}
+        
+    except Exception as e:
+        logging.error(f"Error getting YouTube URL: {e}")
+        return {"success": False, "error": str(e)}
+
 
 # Spotify Callback Handler
 @app.get("/callback")
@@ -418,56 +386,197 @@ async def spotify_callback(request: Request):
         logging.error(f"Authentication error: {e}")
         return {"status": "error", "message": str(e)}
     
-#debug
-@app.post("/api/debug-search")
-async def debug_search(req: StreamRequest):
-    """Debug endpoint to test search functionality"""
+@app.get("/api/test-ytdlp")
+async def test_ytdlp():
+    """Test if yt-dlp is working at all"""
     try:
-        search_query = f"{req.track_name} {req.artist}"
+        from yt_dlp import YoutubeDL
         
         ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': False,  # Show all logs
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+        }
+        
+        with YoutubeDL(ydl_opts) as ydl:
+            # Try a simple, known-working video
+            info = ydl.extract_info("ytsearch1:test video", download=False)
+            
+            if info and 'entries' in info and len(info['entries']) > 0:
+                return {
+                    "status": "working",
+                    "message": "yt-dlp is functional",
+                    "result": {
+                        "id": info['entries'][0].get('id'),
+                        "title": info['entries'][0].get('title'),
+                    }
+                }
+        
+        return {"status": "error", "message": "No results found"}
+        
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/test-ffmpeg")
+async def test_ffmpeg():
+    """Test if FFmpeg is available"""
+    try:
+        import subprocess
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
+        return {
+            "status": "working" if result.returncode == 0 else "error",
+            "version": result.stdout.split('\n')[0] if result.returncode == 0 else None,
+            "error": result.stderr if result.returncode != 0 else None
+        }
+    except FileNotFoundError:
+        return {"status": "error", "message": "FFmpeg not found"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/test-search")
+async def test_search(req: StreamRequest):
+    """Test search functionality without downloading"""
+    try:
+        search_query = f"{req.artist} {req.track_name}"
+        
+        ydl_opts = {
+            'quiet': False,
             'no_warnings': False,
-            'ignoreerrors': True,
-            'no_check_certificate': True,
-            'extract_flat': True,  # Get info without downloading
+            'extract_flat': True,
+            'dump_single_json': True,
         }
         
         results = {}
         
-        # Test different search strategies
-        strategies = {
-            "ytsearch1": f"ytsearch1:{search_query}",
-            "ytsearch10": f"ytsearch10:{search_query}",
-            "scsearch": f"scsearch1:{search_query}",
+        # Test different search methods
+        search_methods = {
+            "youtube": f"ytsearch1:{search_query}",
+            "youtube_audio": f"ytsearch1:{search_query} audio",
+            "youtube_official": f"ytsearch1:{search_query} official audio",
         }
         
-        for strategy_name, strategy_query in strategies.items():
+        for method_name, search_term in search_methods.items():
             try:
                 with YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(strategy_query, download=False)
-                    results[strategy_name] = {
-                        "success": True,
-                        "result_count": len(info.get('entries', [])) if info else 0,
-                        "first_result": info.get('entries', [{}])[0] if info and info.get('entries') else None
-                    }
+                    info = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda st=search_term: ydl.extract_info(st, download=False)
+                        ),
+                        timeout=10.0
+                    )
+                    
+                    if info and 'entries' in info and len(info['entries']) > 0:
+                        entry = info['entries'][0]
+                        results[method_name] = {
+                            "success": True,
+                            "id": entry.get('id'),
+                            "title": entry.get('title'),
+                            "duration": entry.get('duration'),
+                            "url": f"https://youtube.com/watch?v={entry.get('id')}"
+                        }
+                    else:
+                        results[method_name] = {
+                            "success": False,
+                            "error": "No results"
+                        }
+                        
+            except asyncio.TimeoutError:
+                results[method_name] = {"success": False, "error": "Timeout"}
             except Exception as e:
-                results[strategy_name] = {
-                    "success": False,
-                    "error": str(e)
-                }
+                results[method_name] = {"success": False, "error": str(e)}
         
         return {
             "search_query": search_query,
-            "results": results
+            "results": results,
+            "working_methods": [k for k, v in results.items() if v.get("success")]
         }
         
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
+        return {"error": str(e)}
+
+
+@app.get("/api/server-info")
+async def server_info():
+    """Get server information for debugging"""
+    import platform
+    import sys
+    
+    try:
+        # Check yt-dlp version
+        from yt_dlp import version as ytdlp_version
+        ytdlp_ver = ytdlp_version.__version__
+    except:
+        ytdlp_ver = "unknown"
+    
+    return {
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "ytdlp_version": ytdlp_ver,
+        "temp_dir": tempfile.gettempdir(),
+        "cwd": os.getcwd(),
+    }
+
+
+@app.post("/api/quick-test-download")
+async def quick_test_download():
+    """Quick test with a known working track"""
+    try:
+        # Use a Creative Commons track that should always work
+        test_url = "ytsearch1:Creative Commons Music"
+        
+        logging.info("Starting quick test download...")
+        
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        ydl_opts = {
+            'format': 'worstaudio/worst',  # Use worst for speed
+            'outtmpl': temp_path,
+            'quiet': False,
+            'no_warnings': False,
         }
+        
+        with YoutubeDL(ydl_opts) as ydl:
+            await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: ydl.download([test_url])
+                ),
+                timeout=30.0
+            )
+        
+        # Check if file exists
+        if os.path.exists(temp_path):
+            file_size = os.path.getsize(temp_path)
+            os.unlink(temp_path)
+            
+            return {
+                "status": "success",
+                "message": f"Test download successful! File size: {file_size} bytes",
+                "file_size": file_size
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "File was not created"
+            }
+            
+    except asyncio.TimeoutError:
+        return {"status": "error", "message": "Download timed out"}
+    except Exception as e:
+        logging.error(f"Test download error: {e}")
+        return {"status": "error", "message": str(e)}
+    finally:
+        # Cleanup
+        try:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except:
+            pass
 
 @app.get("/")
 async def root():

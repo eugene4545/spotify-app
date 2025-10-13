@@ -1,4 +1,4 @@
-// frontend/src/components/DownloadSettings.tsx - Enhanced version
+// frontend/src/components/DownloadSettings.tsx - Improved with fallbacks
 
 import { useState } from "react";
 import apiClient from "../apiClient";
@@ -15,15 +15,19 @@ const DownloadSettings = ({ playlist }: { playlist: Playlist }) => {
   const [downloadProgress, setDownloadProgress] = useState({ current: 0, total: 0 });
   const [isDownloading, setIsDownloading] = useState(false);
   const [failedTracks, setFailedTracks] = useState<string[]>([]);
+  const [currentTrack, setCurrentTrack] = useState<string>("");
 
-  // Enhanced download with multiple retry strategies
-  const handleDownloadTrack = async (track: TrackItem, retryCount = 0): Promise<boolean> => {
-    const MAX_RETRIES = 3;
+  const handleDownloadTrack = async (track: TrackItem): Promise<boolean> => {
+    const trackName = `${track.artists[0].name} - ${track.name}`;
+    setCurrentTrack(trackName);
     
+    // Try primary endpoint
     try {
-      console.log(`Downloading: ${track.artists[0].name} - ${track.name} (Attempt ${retryCount + 1})`);
+      console.log(`Attempting download: ${trackName}`);
       
-      // Strategy 1: Try primary endpoint
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+      
       const response = await fetch(
         `${apiClient.defaults.baseURL}/stream-track`,
         {
@@ -33,69 +37,79 @@ const DownloadSettings = ({ playlist }: { playlist: Playlist }) => {
             track_name: track.name,
             artist: track.artists[0].name
           }),
-          signal: AbortSignal.timeout(45000) // 45 second timeout
+          signal: controller.signal
         }
       );
       
-      if (!response.ok) {
-        throw new Error(`Download failed: ${response.status}`);
+      clearTimeout(timeoutId);
+      
+      if (response.ok) {
+        const blob = await response.blob();
+        
+        if (blob.size > 0) {
+          // Create download
+          const url = window.URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `${trackName}.mp3`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          window.URL.revokeObjectURL(url);
+          
+          console.log(`✅ Download successful: ${trackName}`);
+          return true;
+        }
       }
       
-      const blob = await response.blob();
-      
-      if (blob.size === 0) {
-        throw new Error("Empty file received");
-      }
-      
-      // Create download
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${track.artists[0].name} - ${track.name}.mp3`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-      
-      console.log(`✅ Download completed: ${track.name}`);
-      return true;
+      throw new Error(`Download failed: ${response.status}`);
       
     } catch (error) {
-      console.error(`Download failed (Attempt ${retryCount + 1}):`, error);
+      console.warn(`Primary download failed for ${trackName}:`, error);
       
-      // Retry logic
-      if (retryCount < MAX_RETRIES) {
-        console.log(`Retrying in ${(retryCount + 1) * 2} seconds...`);
-        await new Promise(resolve => setTimeout(resolve, (retryCount + 1) * 2000));
-        return handleDownloadTrack(track, retryCount + 1);
+      // Try simple endpoint as fallback
+      try {
+        console.log(`Trying simple endpoint for: ${trackName}`);
+        
+        const response = await fetch(
+          `${apiClient.defaults.baseURL}/stream-track-simple`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              track_name: track.name,
+              artist: track.artists[0].name
+            }),
+            signal: AbortSignal.timeout(45000)
+          }
+        );
+        
+        if (response.ok) {
+          const blob = await response.blob();
+          
+          if (blob.size > 0) {
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = `${trackName}.mp3`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+            
+            console.log(`✅ Simple download successful: ${trackName}`);
+            return true;
+          }
+        }
+        
+        throw new Error("Simple endpoint also failed");
+        
+      } catch (fallbackError) {
+        console.error(`All download methods failed for ${trackName}`);
+        return false;
       }
-      
-      // All retries failed
-      console.error(`❌ All attempts failed for: ${track.name}`);
-      return false;
     }
   };
-
-  // Alternative: Get download info for client-side handling
-  // const handleClientSideDownload = async (track: TrackItem): Promise<boolean> => {
-  //   try {
-  //     const response = await apiClient.post("/get-download-info", {
-  //       track_name: track.name,
-  //       artist: track.artists[0].name
-  //     });
-      
-  //     if (response.data.success && response.data.url) {
-  //       // Open in new tab (browser will handle download)
-  //       window.open(response.data.url, '_blank');
-  //       return true;
-  //     }
-      
-  //     return false;
-  //   } catch (error) {
-  //     console.error("Client-side download failed:", error);
-  //     return false;
-  //   }
-  // };
 
   const handleStartDownload = async () => {
     setIsDownloading(true);
@@ -104,7 +118,6 @@ const DownloadSettings = ({ playlist }: { playlist: Playlist }) => {
     setFailedTracks([]);
     
     try {
-      // Get playlist tracks
       const response = await apiClient.post<{
         success: boolean;
         tracks?: TrackItem[];
@@ -118,26 +131,32 @@ const DownloadSettings = ({ playlist }: { playlist: Playlist }) => {
         setDownloadProgress({ current: 0, total: tracks.length });
         
         const failed: string[] = [];
+        let successCount = 0;
         
-        // Download each track with error tracking
         for (const [index, track] of tracks.entries()) {
           const success = await handleDownloadTrack(track);
           
-          if (!success) {
+          if (success) {
+            successCount++;
+          } else {
             failed.push(`${track.artists[0].name} - ${track.name}`);
           }
           
           setDownloadProgress({ current: index + 1, total: tracks.length });
           
-          // Small delay between downloads to avoid rate limiting
+          // Delay between downloads to avoid rate limiting
           if (index < tracks.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
           }
         }
         
+        // Show results
         if (failed.length > 0) {
           setFailedTracks(failed);
-          setError(`${failed.length} track(s) could not be downloaded. See list below.`);
+          setError(`Downloaded ${successCount}/${tracks.length} tracks. ${failed.length} failed.`);
+        } else {
+          setError(null);
+          alert(`✅ Successfully downloaded all ${successCount} tracks!`);
         }
         
       } else {
@@ -149,6 +168,7 @@ const DownloadSettings = ({ playlist }: { playlist: Playlist }) => {
     } finally {
       setIsLoading(false);
       setIsDownloading(false);
+      setCurrentTrack("");
     }
   };
 
@@ -157,21 +177,30 @@ const DownloadSettings = ({ playlist }: { playlist: Playlist }) => {
       <h2 className="text-xl font-semibold mb-4">Download Settings</h2>
 
       {error && (
-        <div className="mb-4 p-3 bg-red-600/20 border border-red-500 rounded-lg text-red-400">
-          {error}
+        <div className={`mb-4 p-3 rounded-lg ${
+          failedTracks.length > 0 ? 'bg-yellow-600/20 border border-yellow-500' : 'bg-red-600/20 border border-red-500'
+        }`}>
+          <p className={failedTracks.length > 0 ? 'text-yellow-400' : 'text-red-400'}>
+            {error}
+          </p>
         </div>
       )}
 
       {failedTracks.length > 0 && (
-        <div className="mb-4 p-3 bg-yellow-900/20 border border-yellow-600 rounded-lg">
-          <p className="text-yellow-400 font-semibold mb-2">Failed Downloads:</p>
-          <ul className="text-sm text-yellow-300 list-disc list-inside max-h-32 overflow-y-auto">
-            {failedTracks.map((track, idx) => (
-              <li key={idx}>{track}</li>
-            ))}
-          </ul>
-          <p className="text-xs text-yellow-500 mt-2">
-            These tracks may not be available on free music platforms.
+        <div className="mb-4 p-3 bg-gray-900/50 border border-gray-700 rounded-lg">
+          <p className="text-gray-300 font-semibold mb-2">Failed Downloads:</p>
+          <div className="max-h-40 overflow-y-auto">
+            <ul className="text-sm text-gray-400 space-y-1">
+              {failedTracks.map((track, idx) => (
+                <li key={idx} className="flex items-start">
+                  <span className="text-red-500 mr-2">•</span>
+                  <span>{track}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="text-xs text-gray-500 mt-3">
+            💡 These tracks may not be available on YouTube. Try downloading them manually.
           </p>
         </div>
       )}
@@ -179,25 +208,39 @@ const DownloadSettings = ({ playlist }: { playlist: Playlist }) => {
       <div className="space-y-4">
         <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-4">
           <p className="text-blue-400 text-sm">
-            <strong>💡 Tip:</strong> Downloads use free music sources (SoundCloud, etc.). 
-            Some tracks may not be available. The app will try multiple sources automatically.
+            <strong>How it works:</strong> Files download from YouTube and similar platforms. 
+            Some tracks may be unavailable due to regional restrictions or copyright.
           </p>
         </div>
 
         {isDownloading && (
-          <div className="p-4 bg-gradient-to-r from-blue-900/20 to-purple-900/20 rounded-lg border border-blue-500/30">
-            <div className="flex justify-between text-sm mb-2">
-              <span className="font-semibold">Downloading tracks...</span>
-              <span className="text-blue-400">{downloadProgress.current}/{downloadProgress.total}</span>
+          <div className="p-4 bg-gradient-to-br from-spotify-green/10 to-green-900/20 rounded-lg border border-spotify-green/30">
+            <div className="flex justify-between items-center mb-2">
+              <span className="font-semibold text-spotify-green">Downloading...</span>
+              <span className="text-sm text-gray-300">
+                {downloadProgress.current}/{downloadProgress.total}
+              </span>
             </div>
-            <div className="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
+            
+            <div className="w-full bg-gray-700 rounded-full h-3 overflow-hidden mb-3">
               <div
-                className="bg-gradient-to-r from-blue-500 to-purple-500 h-3 rounded-full transition-all duration-500"
+                className="bg-gradient-to-r from-spotify-green to-green-400 h-3 rounded-full transition-all duration-500 flex items-center justify-end"
                 style={{ width: `${(downloadProgress.current / downloadProgress.total) * 100}%` }}
-              ></div>
+              >
+                <span className="text-xs text-white font-bold pr-2">
+                  {Math.round((downloadProgress.current / downloadProgress.total) * 100)}%
+                </span>
+              </div>
             </div>
-            <p className="text-xs text-gray-400 mt-2">
-              Please keep this window open during download
+            
+            {currentTrack && (
+              <div className="text-sm text-gray-400 truncate animate-pulse">
+                <span className="text-spotify-green">♪</span> {currentTrack}
+              </div>
+            )}
+            
+            <p className="text-xs text-gray-500 mt-2">
+              ⏳ Please keep this window open. Downloads may take 30-60 seconds per track.
             </p>
           </div>
         )}
@@ -205,7 +248,7 @@ const DownloadSettings = ({ playlist }: { playlist: Playlist }) => {
         <button
           onClick={handleStartDownload}
           disabled={isLoading || isDownloading}
-          className="w-full bg-gradient-to-r from-spotify-green to-green-600 hover:from-green-600 hover:to-green-700 text-white py-3 rounded-lg font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+          className="w-full bg-gradient-to-r from-spotify-green to-green-600 hover:from-green-600 hover:to-green-700 text-white py-4 rounded-lg font-bold text-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl transform hover:scale-105 disabled:transform-none"
         >
           {isDownloading ? (
             <span className="flex items-center justify-center">
@@ -213,20 +256,37 @@ const DownloadSettings = ({ playlist }: { playlist: Playlist }) => {
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
-              Downloading... ({downloadProgress.current}/{downloadProgress.total})
+              Downloading {downloadProgress.current}/{downloadProgress.total}
             </span>
           ) : isLoading ? (
             "Loading tracks..."
           ) : (
-            "Start Download"
+            "🎵 Start Download"
           )}
         </button>
 
         {!isDownloading && downloadProgress.total > 0 && (
-          <div className="text-center text-sm text-gray-400">
-            Last attempt: {downloadProgress.current}/{downloadProgress.total} tracks processed
+          <div className="text-center">
+            <p className="text-sm text-gray-400">
+              Last session: {downloadProgress.current}/{downloadProgress.total} tracks processed
+            </p>
+            {failedTracks.length > 0 && (
+              <p className="text-xs text-yellow-500 mt-1">
+                {downloadProgress.total - failedTracks.length} successful downloads
+              </p>
+            )}
           </div>
         )}
+      </div>
+
+      <div className="mt-6 p-4 bg-gray-900/50 border border-gray-700 rounded-lg">
+        <h3 className="text-sm font-semibold text-gray-300 mb-2">⚠️ Troubleshooting</h3>
+        <ul className="text-xs text-gray-400 space-y-1">
+          <li>• If downloads fail, try again in a few minutes</li>
+          <li>• Some tracks may not be available on YouTube</li>
+          <li>• Check your browser's download settings</li>
+          <li>• Make sure popup blocker isn't blocking downloads</li>
+        </ul>
       </div>
     </div>
   );
