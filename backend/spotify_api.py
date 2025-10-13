@@ -383,97 +383,75 @@ class SpotifyDownloaderAPI:
             return {"error": "Download already in progress"}
 
     def download_track(self, track_info: Dict, download_folder: str) -> bool:
-        # try:
-        #     track = track_info['track']
-        #     if not track or track['type'] != 'track':
-        #         return False 
+        try:
+            track = track_info['track']
+            if not track or track['type'] != 'track':
+                return False
                 
-        #     artist_name = track['artists'][0]['name']
-        #     track_name = track['name']
+            artist_name = track['artists'][0]['name']
+            track_name = track['name']
             
-        #     sanitized_name = self.sanitize_filename(f"{artist_name} - {track_name}")
-        #     final_file = os.path.join(self.temp_download_path, f"{sanitized_name}.mp3")
+            sanitized_name = self.sanitize_filename(f"{artist_name} - {track_name}")
+            final_file = os.path.join(self.temp_download_path, f"{sanitized_name}.mp3")
 
-        #     logging.info(f"Saving track to: {final_file}")
+            logging.info(f"Starting download: {sanitized_name}")
 
-        #     # Skip if already exists
-        #     # if os.path.exists(final_file) and not final_file.endswith('.part'):
-        #     #     logging.info(f"Skipping existing file: {sanitized_name}")
-        #     # return True
-                
-        #     # Search YouTube
-        #     search_query = urllib.parse.quote(f"{track_name} {artist_name} official")
-        #     try:
-        #         html = urllib.request.urlopen(f"https://www.youtube.com/results?search_query={search_query}")
-        #         video_ids = re.findall(r"watch\?v=(\S{11})", html.read().decode())
-        #     except Exception as e:
-        #         logging.warning(f"Error searching YouTube for {sanitized_name}: {e}")
-        #         return False
+            # Search query for YouTube
+            search_query = f"{artist_name} {track_name} official audio"
             
-        #     if not video_ids:
-        #         logging.warning(f"No YouTube videos found for: {sanitized_name}")
-        #         return False
-                
-        #     if not self.is_downloading:
-        #         return False
-                
-        #     # Try downloading from YouTube with improved options
-        #     for video_id in video_ids[:3]:  # Try first 3 results
-        #         try:
-        #             if not self.is_downloading:
-        #                 return False
-                        
-        #             video_url = f"https://www.youtube.com/watch?v={video_id}"
-                    
-        #             ydl_opts = {
-        #                 'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
-        #                 'outtmpl': f'{self.temp_download_path}/%(title)s.%(ext)s',
-        #                 'noplaylist': True,
-        #                 'quiet': True,
-        #                 'no_warnings': True,
-        #                 'ignoreerrors': True,
-        #                 'extract_flat': False,
-        #                 'continuedl': True,
-        #                 'writethumbnail': False,
-        #                 'writeinfojson': False,
-        #                 'cookiefile': None,
-        #                 'extractor_args': {
-        #                     'youtube': {
-        #                         'player_client': ['android', 'web'],
-        #                         'skip': ['hls', 'dash'],
-        #                     }
-        #                 },
-        #                 'http_headers': {
-        #                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        #                 },
-        #                 'postprocessors': [{
-        #                     'key': 'FFmpegExtractAudio',
-        #                     'preferredcodec': 'mp3',
-        #                     'preferredquality': '192',
-        #                 }],
-        #                 'progress_hooks': [self._create_progress_hook()],
-        #                 'timeout': 60
-        #             }
-                    
-        #             with YoutubeDL(ydl_opts) as ydl:
-        #                 if not self.is_downloading:
-        #                     return False
-        #                 ydl.download([video_url])
-        #                 logging.info(f"Downloaded: {sanitized_name}")
-        #                 return True
-                        
-        #         except DownloadInterrupted:
-        #             logging.info(f"Download interrupted for: {sanitized_name}")
-        #             return False
-        #         except Exception as e:
-        #             logging.warning(f"Error downloading video {video_id}: {e}")
-        #             continue
-                    
-        #     return False
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': os.path.join(self.temp_download_path, f'{sanitized_name}.%(ext)s'),
+                'noplaylist': True,
+                'quiet': False,  # Keep logs visible for debugging
+                'no_warnings': False,
+                'ignoreerrors': True,
+                'extract_flat': False,
+                'socket_timeout': 30,
+                'retries': 3,
+                'fragment_retries': 3,
+                'skip_unavailable_fragments': True,
+                'keepvideo': False,
+                'writethumbnail': False,
+                'writeinfojson': False,
+                'cookiefile': None,
+                'noprogress': True,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                },
+            }
             
-        # except Exception as e:
-        #     logging.error(f"Error downloading track: {e}")
-            return True
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    # Search and download with timeout
+                    ydl.download([f"ytsearch1:{search_query}"])
+                    
+                # Check if file was created successfully
+                if os.path.exists(final_file):
+                    logging.info(f"✅ Successfully downloaded: {sanitized_name}")
+                    return True
+                else:
+                    # Check for any .mp3 file with similar name
+                    for file in os.listdir(self.temp_download_path):
+                        if file.startswith(sanitized_name) and file.endswith('.mp3'):
+                            logging.info(f"✅ Found downloaded file: {file}")
+                            return True
+                    
+                    logging.warning(f"❌ No output file created for: {sanitized_name}")
+                    return False
+                    
+            except Exception as e:
+                logging.error(f"Download failed for {sanitized_name}: {str(e)}")
+                return False
+                
+        except Exception as e:
+            logging.error(f"Error in download_track for {track_name}: {str(e)}")
+            return False
 
     def _create_progress_hook(self):
         def progress_hook(d):

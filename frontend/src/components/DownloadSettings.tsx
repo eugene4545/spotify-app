@@ -23,7 +23,7 @@ const handleDownloadTrack = async (track: TrackItem) => {
     console.log(`Starting download: ${track.artists[0].name} - ${track.name}`);
     
     const response = await fetch(
-      `https://spotify-app-backend-yqzt.onrender.com/api/stream-track-simple`,
+      `https://spotify-app-backend-yqzt.onrender.com/api/stream-track`,
       {
         method: 'POST',
         headers: {
@@ -39,17 +39,17 @@ const handleDownloadTrack = async (track: TrackItem) => {
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`Server error: ${response.status}`, errorText);
-      throw new Error(`Download failed: ${response.status} - ${errorText}`);
+      throw new Error(`Download failed: ${response.status}`);
     }
     
     const blob = await response.blob();
-    console.log(`Received blob: ${blob.size} bytes, type: ${blob.type}`);
+    console.log(`Received blob: ${blob.size} bytes`);
     
     if (blob.size === 0) {
       throw new Error("Empty file received - download may have timed out");
     }
     
-    // Create download
+    // Create download link
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;

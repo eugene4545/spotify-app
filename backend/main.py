@@ -127,94 +127,71 @@ def start_download(req: PlaylistRequest):
 def stop_download():
     return api.stop_download()
 
-@app.get("/api/test-download")
-async def test_download():
-    # Create a test file
-    test_path = os.path.join(api.temp_download_path, "test.mp3")
-    with open(test_path, "wb") as f:
-        f.write(b"TEST AUDIO FILE")
-    
-    return FileResponse(
-        test_path,
-        media_type="audio/mpeg",
-        filename="test.mp3",
-        headers={
-            "Content-Disposition": "attachment; filename=\"test.mp3\"",
-            "Content-Type": "audio/mpeg"
-        }
-    )
+@app.post("/api/test-download-single")
+async def test_download_single():
+    """Test the download logic with a known working track"""
+    try:
+        test_req = StreamRequest(
+            track_name="Blinding Lights",
+            artist="The Weeknd"
+        )
+        return await stream_track(test_req)
+    except Exception as e:
+        return {"error": str(e)}
 
-# @app.post("/api/stream-track")
-# async def stream_track(req: StreamRequest):
-#     """Stream track directly without saving to filesystem"""
-#     try:
-#         search_query = f"{req.track_name} {req.artist} official audio"
+@app.post("/api/stream-track")
+async def stream_track(req: StreamRequest):
+    """Stream track directly - this is your main download method"""
+    try:
+        search_query = f"{req.track_name} {req.artist} official audio"
+        filename = f"{req.artist} - {req.track_name}.mp3"
         
-#         ydl_opts = {
-#             'format': 'bestaudio/best',
-#             'outtmpl': '-',  # Output to stdout
-#             'quiet': True,
-#             'no_warnings': True,
-#             'noplaylist': True,
-#             'extractaudio': True,
-#             'audioformat': 'mp3',
-#             'audioquality': '5',  # 0-9, 0 is best
-#             'http_headers': {
-#                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-#             },
-#         }
+        # Sanitize filename for safety
+        filename = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '.', '_')).rstrip()
         
-#         # Use BytesIO to capture audio data in memory
-#         import io
-#         audio_buffer = io.BytesIO()
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': '-',  # Output to stdout
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+            'extractaudio': True,
+            'audioformat': 'mp3',
+            'audioquality': '5',
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            'socket_timeout': 30,
+            'retries': 3,
+        }
         
-#         def progress_hook(d):
-#             if d['status'] == 'finished':
-#                 logging.info(f"Download finished: {d['filename']}")
+        # Use thread pool to avoid blocking
+        def download_audio():
+            with YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(f"ytsearch1:{search_query}", download=True)
         
-#         ydl_opts['progress_hooks'] = [progress_hook]
+        loop = asyncio.get_event_loop()
+        audio_data = await asyncio.wait_for(
+            loop.run_in_executor(None, download_audio),
+            timeout=25.0  # Under Render's 30s timeout
+        )
         
-#         with YoutubeDL(ydl_opts) as ydl:
-#             # Search and get info first
-#             info = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
-#             if not info or 'entries' not in info or not info['entries']:
-#                 raise HTTPException(status_code=404, detail="No audio found")
+        return StreamingResponse(
+            io.BytesIO(audio_data),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Type": "audio/mpeg",
+            }
+        )
             
-#             # Get the first result
-#             video_info = info['entries'][0]
-#             video_url = video_info['url'] if 'url' in video_info else video_info['webpage_url']
-            
-#             # Download to memory buffer
-#             def download_to_buffer():
-#                 with YoutubeDL(ydl_opts) as ydl_download:
-#                     ydl_download.download([video_url])
-            
-#             # Use thread pool for async download
-#             import concurrent.futures
-#             with concurrent.futures.ThreadPoolExecutor() as executor:
-#                 future = executor.submit(download_to_buffer)
-#                 # Wait for download with timeout
-#                 try:
-#                     future.result(timeout=45)  # 45 second timeout
-#                 except concurrent.futures.TimeoutError:
-#                     raise HTTPException(status_code=408, detail="Download timeout")
-            
-#         filename = f"{req.artist} - {req.track_name}.mp3"
-        
-#         return StreamingResponse(
-#             io.BytesIO(audio_buffer.getvalue()),
-#             media_type="audio/mpeg",
-#             headers={
-#                 "Content-Disposition": f'attachment; filename="{filename}"',
-#                 "Content-Type": "audio/mpeg",
-#             }
-#         )
-            
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         logging.error(f"Streaming error: {e}")
-#         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+    except asyncio.TimeoutError:
+        logging.error("Download timeout - taking too long")
+        raise HTTPException(status_code=408, detail="Download took too long. Try again.")
+    except Exception as e:
+        logging.error(f"Streaming error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
 
 @app.post("/api/stream-track-direct")
 async def stream_track_direct(req: StreamRequest):
