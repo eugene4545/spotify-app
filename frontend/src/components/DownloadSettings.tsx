@@ -22,7 +22,7 @@ const handleDownloadTrack = async (track: TrackItem) => {
   try {
     // Try the alternative endpoint first
     const response = await fetch(
-      `https://spotify-app-backend-yqzt.onrender.com/api/stream-track-alt`,
+      `https://spotify-app-backend-yqzt.onrender.com/api/stream-track`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
