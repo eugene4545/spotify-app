@@ -141,71 +141,216 @@ async def test_download_single():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Use SoundCloud as primary source, YouTube as fallback"""
+    """Enhanced streaming with multiple fallback sources and better error handling"""
     try:
         search_query = f"{req.track_name} {req.artist}"
         filename = f"{req.artist} - {req.track_name}.mp3"
         filename = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '.')).rstrip()
 
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': '-',
-            'quiet': True,
-            'no_warnings': True,
-            'noplaylist': True,
-            'extractaudio': True,
-            'audioformat': 'mp3',
-            'ignoreerrors': True,
-            'no_check_certificate': True,
-        }
+        # Strategy 1: Try direct URL download from common sources
+        async def try_direct_sources():
+            sources = [
+                f"https://soundcloud.com/search?q={urllib.parse.quote(search_query)}",
+                f"https://www.jamendo.com/search?qs=search&q={urllib.parse.quote(search_query)}",
+            ]
+            
+            for source_url in sources:
+                try:
+                    ydl_opts = {
+                        'format': 'bestaudio/best',
+                        'outtmpl': '-',
+                        'quiet': True,
+                        'no_warnings': True,
+                        'noplaylist': True,
+                        'extract_flat': False,
+                        'socket_timeout': 15,
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                            'Accept-Language': 'en-us,en;q=0.5',
+                            'Sec-Fetch-Mode': 'navigate',
+                        },
+                    }
+                    
+                    with YoutubeDL(ydl_opts) as ydl:
+                        info = await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None, 
+                                lambda: ydl.extract_info(source_url, download=False)
+                            ),
+                            timeout=10.0
+                        )
+                        if info and 'url' in info:
+                            return info['url']
+                except Exception as e:
+                    logging.warning(f"Direct source {source_url} failed: {e}")
+                    continue
+            return None
 
-        def try_download(source):
-            try:
-                with YoutubeDL(ydl_opts) as ydl:
-                    return ydl.extract_info(source, download=True)
-            except Exception as e:
-                logging.warning(f"Failed with {source}: {e}")
-                return None
+        # Strategy 2: Use alternative search methods
+        async def try_alternative_search():
+            strategies = [
+                # SoundCloud search (most reliable)
+                ("soundcloud", f"scsearch1:{search_query}"),
+                # Bandcamp
+                ("bandcamp", f"bcsearch1:{search_query}"),
+                # Archive.org
+                ("archive", f"https://archive.org/details/{urllib.parse.quote(search_query.replace(' ', '_'))}"),
+                # YouTube Music (different from regular YouTube)
+                ("youtube_music", f"https://music.youtube.com/search?q={urllib.parse.quote(search_query)}"),
+            ]
+            
+            for strategy_name, search_term in strategies:
+                try:
+                    logging.info(f"Trying {strategy_name} search...")
+                    
+                    ydl_opts = {
+                        'format': 'bestaudio/best',
+                        'quiet': True,
+                        'no_warnings': True,
+                        'noplaylist': True,
+                        'extract_flat': False,
+                        'socket_timeout': 20,
+                        'retries': 2,
+                        'fragment_retries': 2,
+                        'skip_unavailable_fragments': True,
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        },
+                        'geo_bypass': True,
+                        'geo_bypass_country': 'US',
+                    }
+                    
+                    with YoutubeDL(ydl_opts) as ydl:
+                        info = await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: ydl.extract_info(search_term, download=False)
+                            ),
+                            timeout=15.0
+                        )
+                        
+                        if info:
+                            # Get the actual audio URL
+                            if 'entries' in info and len(info['entries']) > 0:
+                                audio_url = info['entries'][0].get('url')
+                            else:
+                                audio_url = info.get('url')
+                            
+                            if audio_url:
+                                logging.info(f"✅ Found audio with {strategy_name}")
+                                
+                                # Download the audio
+                                async with httpx.AsyncClient(timeout=60.0) as client:
+                                    response = await client.get(audio_url)
+                                    if response.status_code == 200:
+                                        return response.content
+                                        
+                except asyncio.TimeoutError:
+                    logging.warning(f"Timeout with {strategy_name}")
+                except Exception as e:
+                    logging.warning(f"Failed with {strategy_name}: {e}")
+                    continue
+            
+            return None
 
-        loop = asyncio.get_event_loop()
+        # Strategy 3: Use a proxy/VPN approach (last resort)
+        async def try_with_proxy():
+            # You can add proxy support here if needed
+            # This would require additional configuration
+            pass
+
+        # Try strategies in order
         audio_data = None
         
-        # Try sources in order of reliability
-        sources = [
-            f"scsearch1:{search_query}",  # SoundCloud - most reliable
-            f"ytsearch1:{req.track_name} {req.artist} soundcloud",  # YouTube search for SoundCloud
-            f"ytsearch1:{req.track_name} {req.artist} audio",  # YouTube as last resort
-        ]
+        # Try alternative search first (most reliable)
+        audio_data = await try_alternative_search()
         
-        for source in sources:
-            try:
-                logging.info(f"Trying source: {source}")
-                audio_data = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda s=source: try_download(s)),
-                    timeout=15.0
-                )
-                if audio_data:
-                    logging.info(f"Success with source: {source}")
-                    break
-            except asyncio.TimeoutError:
-                logging.warning(f"Timeout with source: {source}")
-                continue
-            except Exception as e:
-                logging.warning(f"Error with source {source}: {e}")
-                continue
-
         if not audio_data:
-            raise HTTPException(status_code=404, detail="No audio source found for this track")
+            raise HTTPException(
+                status_code=404, 
+                detail="Unable to find audio source. The track may not be available on free platforms."
+            )
 
         return StreamingResponse(
             io.BytesIO(audio_data),
             media_type="audio/mpeg",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Type": "audio/mpeg",
+            }
         )
             
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Stream error: {e}")
-        raise HTTPException(status_code=500, detail="Download service unavailable")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Download service unavailable: {str(e)}"
+        )
+
+
+# Alternative: Client-side download approach
+@app.post("/api/get-download-info")
+async def get_download_info(req: StreamRequest):
+    """
+    Returns download URLs for client-side downloading
+    This bypasses server IP restrictions
+    """
+    try:
+        search_query = f"{req.track_name} {req.artist}"
+        
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'skip_download': True,  # Don't download, just get info
+        }
+        
+        sources_to_try = [
+            f"scsearch1:{search_query}",
+            f"https://soundcloud.com/search?q={urllib.parse.quote(search_query)}",
+        ]
+        
+        for source in sources_to_try:
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: ydl.extract_info(source, download=False)
+                        ),
+                        timeout=10.0
+                    )
+                    
+                    if info:
+                        if 'entries' in info:
+                            info = info['entries'][0]
+                        
+                        return {
+                            "success": True,
+                            "url": info.get('url'),
+                            "title": info.get('title'),
+                            "duration": info.get('duration'),
+                            "source": "soundcloud"
+                        }
+            except Exception as e:
+                logging.warning(f"Failed to get info from {source}: {e}")
+                continue
+        
+        return {
+            "success": False,
+            "error": "No audio source found"
+        }
+        
+    except Exception as e:
+        logging.error(f"Error getting download info: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 @app.post("/api/stream-track-simple")
