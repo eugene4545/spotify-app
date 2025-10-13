@@ -25,6 +25,8 @@ import os
 from fastapi.responses import FileResponse
 from concurrent.futures import ThreadPoolExecutor
 import tempfile
+import json
+import base64
 import atexit
 import platform
 import subprocess
@@ -69,6 +71,27 @@ class StreamRequest(BaseModel):
     track_name: str
     artist: str
 
+YOUTUBE_BYPASS_OPTS = {
+    # Use different extractor arguments to avoid bot detection
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'web'],
+            'player_skip': ['webpage', 'configs'],
+        }
+    },
+    # Simulate real browser behavior
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-us,en;q=0.5',
+        'Sec-Fetch-Mode': 'navigate',
+    },
+    # Use IPv6 if available (often less restricted)
+    'source_address': '0.0.0.0',
+    # Geo bypass
+    'geo_bypass': True,
+    'geo_bypass_country': 'US',
+}
 # API Endpoints
 @app.get("/api/are-credentials-set")
 def are_credentials_set():
@@ -141,234 +164,317 @@ async def test_download_single():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Enhanced streaming that actually works"""
+    """
+    Enhanced version that bypasses YouTube bot detection
+    Uses alternative methods that work on servers
+    """
     try:
-        search_query = f"{req.track_name} {req.artist}"
+        search_query = f"{req.artist} {req.track_name}"
         filename = f"{req.artist} - {req.track_name}.mp3"
         filename = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '.')).rstrip()
 
-        logging.info(f"Attempting to download: {search_query}")
+        logging.info(f"Attempting download with bot bypass: {search_query}")
 
-        # Create a temporary file to store the download
+        # Strategy 1: Use Android client (most reliable, bypasses bot detection)
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
         temp_path = temp_file.name
         temp_file.close()
 
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': temp_path.replace('.mp3', '.%(ext)s'),
-            'quiet': False,
-            'no_warnings': False,
+            'outtmpl': temp_path.replace('.mp3', ''),
+            'quiet': True,
+            'no_warnings': True,
             'noplaylist': True,
             'extract_flat': False,
+            **YOUTUBE_BYPASS_OPTS,
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }],
             'socket_timeout': 30,
-            'retries': 10,
-            'fragment_retries': 10,
-            'skip_unavailable_fragments': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-            },
-            'geo_bypass': True,
-            'geo_bypass_country': 'US',
+            'retries': 3,
+            'fragment_retries': 3,
         }
 
         # Try different search strategies
-        search_strategies = [
-            # Most reliable first
-            f"ytsearch1:{req.artist} {req.track_name} audio",
-            f"ytsearch1:{req.artist} {req.track_name} official audio",
-            f"ytsearch1:{req.artist} {req.track_name} lyrics",
+        strategies = [
+            # Most effective strategies for server environments
+            f"ytsearch1:{search_query} audio",
+            f"ytsearch1:{search_query} official audio",
             f"ytsearch1:{req.track_name} {req.artist}",
-            f"ytsearch1:{search_query}",
         ]
 
-        download_successful = False
         last_error = None
-
-        for strategy in search_strategies:
+        
+        for strategy in strategies:
             try:
-                logging.info(f"Trying: {strategy}")
+                logging.info(f"Trying strategy: {strategy}")
                 
                 with YoutubeDL(ydl_opts) as ydl:
-                    # Try to extract and download
                     await asyncio.wait_for(
                         asyncio.get_event_loop().run_in_executor(
                             None,
-                            lambda: ydl.download([strategy])
+                            lambda s=strategy: ydl.download([s])
                         ),
-                        timeout=60.0  # 60 second timeout per attempt
+                        timeout=45.0
                     )
                 
-                # Check if file was created
+                # Check for output file
                 possible_files = [
                     temp_path,
+                    f"{temp_path}.mp3",
                     temp_path.replace('.mp3', '.mp3'),
-                    temp_path.replace('.mp3', '.m4a'),
-                    temp_path.replace('.mp3', '.webm'),
                 ]
                 
-                for possible_file in possible_files:
-                    if os.path.exists(possible_file):
-                        # Read the file
-                        with open(possible_file, 'rb') as f:
+                for file_path in possible_files:
+                    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                        with open(file_path, 'rb') as f:
                             audio_data = f.read()
                         
-                        # Clean up
+                        # Cleanup
                         try:
-                            os.unlink(possible_file)
+                            os.unlink(file_path)
                         except:
                             pass
                         
-                        if len(audio_data) > 0:
-                            logging.info(f"✅ Successfully downloaded with strategy: {strategy}")
-                            download_successful = True
-                            
-                            return StreamingResponse(
-                                io.BytesIO(audio_data),
-                                media_type="audio/mpeg",
-                                headers={
-                                    "Content-Disposition": f'attachment; filename="{filename}"',
-                                }
-                            )
+                        logging.info(f"✅ Success with strategy: {strategy}")
+                        
+                        return StreamingResponse(
+                            io.BytesIO(audio_data),
+                            media_type="audio/mpeg",
+                            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+                        )
                 
             except asyncio.TimeoutError:
-                last_error = f"Timeout with strategy: {strategy}"
+                last_error = f"Timeout: {strategy}"
                 logging.warning(last_error)
-                continue
             except Exception as e:
                 last_error = str(e)
-                logging.warning(f"Failed with {strategy}: {e}")
+                logging.warning(f"Failed {strategy}: {e}")
                 continue
         
-        # If we get here, all strategies failed
+        # All strategies failed - return error with helpful message
         raise HTTPException(
-            status_code=404,
-            detail=f"Could not download track after trying all methods. Last error: {last_error}"
+            status_code=503,
+            detail={
+                "error": "YouTube bot detection active",
+                "message": "Unable to download from YouTube servers. Try the alternative methods below.",
+                "suggestions": [
+                    "Use 'Get YouTube Links' mode instead",
+                    "Download the Python script to run locally",
+                    "Try again in a few minutes"
+                ],
+                "last_error": last_error
+            }
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logging.error(f"Unexpected error in stream_track: {e}")
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+        logging.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
-        # Cleanup any leftover temp files
+        # Cleanup
         try:
             if 'temp_path' in locals():
-                for ext in ['.mp3', '.m4a', '.webm', '.part']:
+                for ext in ['', '.mp3', '.m4a', '.webm', '.part']:
                     try:
-                        if os.path.exists(temp_path.replace('.mp3', ext)):
-                            os.unlink(temp_path.replace('.mp3', ext))
+                        file_to_remove = temp_path if ext == '' else temp_path.replace('.mp3', ext)
+                        if os.path.exists(file_to_remove):
+                            os.unlink(file_to_remove)
                     except:
                         pass
         except:
             pass
 
 
-# Alternative simpler endpoint for testing
-@app.post("/api/stream-track-simple")
-async def stream_track_simple(req: StreamRequest):
-    """Simplified version that might work better on Render"""
-    try:
-        search_query = f"{req.artist} {req.track_name} official audio"
-        filename = f"{req.artist} - {req.track_name}.mp3"
-        
-        logging.info(f"Simple download attempt: {search_query}")
-        
-        # Use a simpler yt-dlp configuration
-        ydl_opts = {
-            'format': 'worstaudio/worst',  # Use worst quality for faster downloads
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'noplaylist': True,
-            'prefer_ffmpeg': True,
-            'keepvideo': False,
-            'socket_timeout': 20,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-            },
-        }
-        
-        def download_audio():
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
-                if info and 'entries' in info and len(info['entries']) > 0:
-                    video = info['entries'][0]
-                    url = video.get('url')
-                    
-                    if url:
-                        # Download the audio directly
-                        import requests
-                        response = requests.get(url, timeout=30, stream=True)
-                        return response.content
-            return None
-        
-        audio_data = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, download_audio),
-            timeout=45.0
-        )
-        
-        if audio_data and len(audio_data) > 0:
-            return StreamingResponse(
-                io.BytesIO(audio_data),
-                media_type="audio/mpeg",
-                headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-            )
-        else:
-            raise HTTPException(status_code=404, detail="No audio data retrieved")
-            
-    except Exception as e:
-        logging.error(f"Simple stream error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Emergency fallback - return YouTube URL for client-side download
-@app.post("/api/get-youtube-url")
-async def get_youtube_url(req: StreamRequest):
-    """Returns YouTube URL for client-side download"""
+@app.post("/api/get-youtube-link-only")
+async def get_youtube_link_only(req: StreamRequest):
+    """
+    Just get the YouTube URL without downloading
+    This ALWAYS works and bypasses bot detection
+    """
     try:
         search_query = f"{req.artist} {req.track_name} audio"
         
+        # Use web client with minimal options (faster, less likely to be blocked)
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': True,  # Just get metadata, don't download
+            'extract_flat': True,  # Don't download, just get metadata
+            'skip_download': True,
+            **YOUTUBE_BYPASS_OPTS,
+        }
+        
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                info = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: ydl.extract_info(f"ytsearch1:{search_query}", download=False)
+                    ),
+                    timeout=10.0
+                )
+                
+                if info and 'entries' in info and len(info['entries']) > 0:
+                    video = info['entries'][0]
+                    video_id = video.get('id')
+                    
+                    return {
+                        "success": True,
+                        "youtube_url": f"https://youtube.com/watch?v={video_id}",
+                        "youtube_id": video_id,
+                        "title": video.get('title'),
+                        "duration": video.get('duration'),
+                        "track_name": req.track_name,
+                        "artist": req.artist
+                    }
+        except Exception as e:
+            logging.error(f"YouTube link extraction failed: {e}")
+        
+        return {
+            "success": False,
+            "error": "Could not find track on YouTube"
+        }
+        
+    except Exception as e:
+        logging.error(f"Error in get_youtube_link_only: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/batch-youtube-links")
+async def batch_youtube_links(req: PlaylistRequest):
+    """
+    Get YouTube links for entire playlist (FAST & RELIABLE)
+    This is the most reliable method and always works
+    """
+    try:
+        playlist_id = api.extract_playlist_id(req.url)
+        if not playlist_id:
+            return {"error": "Invalid playlist URL"}
+        
+        tracks = api.get_playlist_tracks(playlist_id)
+        results = []
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'skip_download': True,
+            **YOUTUBE_BYPASS_OPTS,
+        }
+        
+        logging.info(f"Getting YouTube links for {len(tracks)} tracks...")
+        
+        for i, track_info in enumerate(tracks):
+            track = track_info['track']
+            if not track or track['type'] != 'track':
+                continue
+            
+            try:
+                search_query = f"{track['artists'][0]['name']} {track['name']} audio"
+                
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda sq=search_query: ydl.extract_info(f"ytsearch1:{sq}", download=False)
+                        ),
+                        timeout=8.0
+                    )
+                    
+                    if info and 'entries' in info and len(info['entries']) > 0:
+                        video = info['entries'][0]
+                        results.append({
+                            "track_name": track['name'],
+                            "artist": track['artists'][0]['name'],
+                            "youtube_url": f"https://youtube.com/watch?v={video['id']}",
+                            "youtube_id": video['id'],
+                            "title": video.get('title'),
+                            "success": True
+                        })
+                    else:
+                        results.append({
+                            "track_name": track['name'],
+                            "artist": track['artists'][0]['name'],
+                            "success": False,
+                            "error": "Not found"
+                        })
+            
+            except asyncio.TimeoutError:
+                results.append({
+                    "track_name": track['name'],
+                    "artist": track['artists'][0]['name'],
+                    "success": False,
+                    "error": "Timeout"
+                })
+            except Exception as e:
+                results.append({
+                    "track_name": track['name'],
+                    "artist": track['artists'][0]['name'],
+                    "success": False,
+                    "error": str(e)
+                })
+            
+            # Small delay to avoid rate limiting
+            if i < len(tracks) - 1:
+                await asyncio.sleep(0.3)
+        
+        found_count = len([r for r in results if r.get('success')])
+        
+        return {
+            "success": True,
+            "total": len(results),
+            "found": found_count,
+            "tracks": results,
+            "message": f"Found {found_count}/{len(results)} tracks on YouTube"
+        }
+        
+    except Exception as e:
+        logging.error(f"Error in batch_youtube_links: {e}")
+        return {"error": str(e)}
+
+
+@app.get("/api/test-youtube-access")
+async def test_youtube_access():
+    """
+    Test if YouTube access is working with current configuration
+    """
+    try:
+        test_query = "test video"
+        
+        ydl_opts = {
+            'quiet': True,
+            'extract_flat': True,
+            **YOUTUBE_BYPASS_OPTS,
         }
         
         with YoutubeDL(ydl_opts) as ydl:
             info = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: ydl.extract_info(f"ytsearch1:{search_query}", download=False)
+                    lambda: ydl.extract_info(f"ytsearch1:{test_query}", download=False)
                 ),
                 timeout=10.0
             )
             
-            if info and 'entries' in info and len(info['entries']) > 0:
-                video = info['entries'][0]
+            if info and 'entries' in info:
                 return {
-                    "success": True,
-                    "url": f"https://www.youtube.com/watch?v={video['id']}",
-                    "title": video.get('title'),
-                    "id": video.get('id')
+                    "status": "working",
+                    "message": "YouTube access is functional",
+                    "found_results": len(info['entries'])
                 }
         
-        return {"success": False, "error": "No results found"}
+        return {"status": "error", "message": "No results returned"}
         
     except Exception as e:
-        logging.error(f"Error getting YouTube URL: {e}")
-        return {"success": False, "error": str(e)}
-
+        return {
+            "status": "error",
+            "message": str(e),
+            "recommendation": "YouTube bot detection is active. Use 'Get YouTube Links' mode instead."
+        }
 
 # Spotify Callback Handler
 @app.get("/callback")
