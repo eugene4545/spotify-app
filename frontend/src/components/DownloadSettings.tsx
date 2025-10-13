@@ -227,11 +227,24 @@ const DownloadSettings = ({ playlist }: { playlist: Playlist }) => {
       {/* Show YouTube Links */}
       {showLinks && youtubeLinks.length > 0 && (
         <div className="bg-gray-900 rounded-lg p-5 border border-gray-700">
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex justify-between items-center mb-4 flex-wrap gap-2">
             <h3 className="text-xl font-bold">
               YouTube Links ({youtubeLinks.filter(l => l.success).length}/{youtubeLinks.length})
             </h3>
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={() => {
+                  const allLinks = youtubeLinks
+                    .filter(l => l.success && l.youtube_url)
+                    .map(l => l.youtube_url)
+                    .join('\n');
+                  navigator.clipboard.writeText(allLinks);
+                  alert('✅ All links copied to clipboard!\n\nNow:\n1. Open JDownloader\n2. Links will auto-detect\n3. Downloads start automatically!');
+                }}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition"
+              >
+                📋 Copy All Links
+              </button>
               <button
                 onClick={exportLinks}
                 className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition"
