@@ -20,15 +20,12 @@ const DownloadSettings = ({
 
 const handleDownloadTrack = async (track: TrackItem) => {
   try {
-    console.log(`Starting download: ${track.artists[0].name} - ${track.name}`);
-    
+    // Try the alternative endpoint first
     const response = await fetch(
-      `https://spotify-app-backend-yqzt.onrender.com/api/stream-track`,
+      `https://spotify-app-backend-yqzt.onrender.com/api/stream-track-alt`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           track_name: track.name,
           artist: track.artists[0].name
@@ -36,30 +33,16 @@ const handleDownloadTrack = async (track: TrackItem) => {
       }
     );
     
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`Server error: ${response.status}`, errorText);
-      throw new Error(`Download failed: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     
     const blob = await response.blob();
-    console.log(`Received blob: ${blob.size} bytes`);
-    
-    if (blob.size === 0) {
-      throw new Error("Empty file received - download may have timed out");
-    }
-    
-    // Create download link
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
     link.download = `${track.artists[0].name} - ${track.name}.mp3`;
-    document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
     window.URL.revokeObjectURL(url);
     
-    console.log(`Download completed: ${track.name}`);
     return true;
   } catch (error) {
     console.error("Download failed:", error);

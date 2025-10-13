@@ -193,51 +193,72 @@ async def stream_track(req: StreamRequest):
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 
-@app.post("/api/stream-track-direct")
-async def stream_track_direct(req: StreamRequest):
-    """Use direct audio URL when available"""
+@app.post("/api/stream-track-alt")
+async def stream_track_alt(req: StreamRequest):
+    """Try multiple audio sources"""
     try:
         search_query = f"{req.track_name} {req.artist}"
         filename = f"{req.artist} - {req.track_name}.mp3"
+        filename = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '.')).rstrip()
+
+        # Try different search strategies
+        search_sources = [
+            f"ytsearch1:{search_query}",
+            f"scsearch1:{search_query}",  # SoundCloud
+            f"ytsearch1:{req.track_name} {req.artist} audio",
+            f"ytsearch1:{req.track_name} {req.artist} official audio",
+        ]
         
-        # Try multiple search strategies
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': '-',  # Output to stdout
+            'outtmpl': '-',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
             'extractaudio': True,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
+            'audioformat': 'mp3',
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            },
+            'ignoreerrors': True,
         }
         
-        with YoutubeDL(ydl_opts) as ydl:
-            # Try YouTube search
+        def try_download(source):
             try:
-                info = ydl.extract_info(f"ytsearch1:{search_query}", download=False)
-                if info and 'entries' in info and info['entries']:
-                    video_url = info['entries'][0]['webpage_url']
-                    
-                    # Download directly to memory
-                    audio_data = ydl.extract_info(video_url, download=True)
-                    
-                    return StreamingResponse(
-                        io.BytesIO(audio_data),
-                        media_type="audio/mpeg",
-                        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-                    )
-            except Exception as e:
-                logging.warning(f"YouTube download failed: {e}")
+                with YoutubeDL(ydl_opts) as ydl:
+                    return ydl.extract_info(source, download=True)
+            except:
+                return None
         
-        raise HTTPException(status_code=404, detail="No downloadable audio found")
+        loop = asyncio.get_event_loop()
+        audio_data = None
         
+        # Try each source until one works
+        for source in search_sources:
+            try:
+                audio_data = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda s=source: try_download(s)),
+                    timeout=20.0
+                )
+                if audio_data:
+                    break
+            except:
+                continue
+        
+        if not audio_data:
+            raise HTTPException(status_code=404, detail="No audio source found")
+        
+        return StreamingResponse(
+            io.BytesIO(audio_data),
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+            
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=408, detail="Download timeout")
     except Exception as e:
-        logging.error(f"Direct streaming error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Stream error: {e}")
+        raise HTTPException(status_code=500, detail="Download failed")
 
 @app.post("/api/stream-track-simple")
 async def stream_track_simple(req: StreamRequest):
