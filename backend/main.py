@@ -141,14 +141,12 @@ async def test_download_single():
 
 @app.post("/api/stream-track")
 async def stream_track(req: StreamRequest):
-    """Stream track with YouTube bot avoidance"""
+    """Use SoundCloud as primary source, YouTube as fallback"""
     try:
         search_query = f"{req.track_name} {req.artist}"
         filename = f"{req.artist} - {req.track_name}.mp3"
-        
-        # Clean filename
         filename = "".join(c for c in filename if c.isalnum() or c in (' ', '-', '.')).rstrip()
-        
+
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': '-',
@@ -157,45 +155,57 @@ async def stream_track(req: StreamRequest):
             'noplaylist': True,
             'extractaudio': True,
             'audioformat': 'mp3',
-            # Anti-bot measures
-            'extractor_args': {
-                'youtube': {
-                    'skip': ['dash', 'hls']
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
-            },
             'ignoreerrors': True,
             'no_check_certificate': True,
-            'restrictfilenames': True,
         }
-        
-        def download():
-            with YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(f"ytsearch1:{search_query}", download=True)
-        
+
+        def try_download(source):
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    return ydl.extract_info(source, download=True)
+            except Exception as e:
+                logging.warning(f"Failed with {source}: {e}")
+                return None
+
         loop = asyncio.get_event_loop()
-        audio_data = await asyncio.wait_for(
-            loop.run_in_executor(None, download),
-            timeout=25.0
-        )
+        audio_data = None
         
+        # Try sources in order of reliability
+        sources = [
+            f"scsearch1:{search_query}",  # SoundCloud - most reliable
+            f"ytsearch1:{req.track_name} {req.artist} soundcloud",  # YouTube search for SoundCloud
+            f"ytsearch1:{req.track_name} {req.artist} audio",  # YouTube as last resort
+        ]
+        
+        for source in sources:
+            try:
+                logging.info(f"Trying source: {source}")
+                audio_data = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda s=source: try_download(s)),
+                    timeout=15.0
+                )
+                if audio_data:
+                    logging.info(f"Success with source: {source}")
+                    break
+            except asyncio.TimeoutError:
+                logging.warning(f"Timeout with source: {source}")
+                continue
+            except Exception as e:
+                logging.warning(f"Error with source {source}: {e}")
+                continue
+
+        if not audio_data:
+            raise HTTPException(status_code=404, detail="No audio source found for this track")
+
         return StreamingResponse(
             io.BytesIO(audio_data),
             media_type="audio/mpeg",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'}
         )
             
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=408, detail="Download timeout")
     except Exception as e:
         logging.error(f"Stream error: {e}")
-        raise HTTPException(status_code=500, detail="Download service temporarily unavailable")
+        raise HTTPException(status_code=500, detail="Download service unavailable")
 
 
 @app.post("/api/stream-track-simple")

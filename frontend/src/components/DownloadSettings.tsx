@@ -20,7 +20,8 @@ const DownloadSettings = ({
 
 const handleDownloadTrack = async (track: TrackItem) => {
   try {
-    // Try the alternative endpoint first
+    console.log(`Downloading: ${track.artists[0].name} - ${track.name}`);
+    
     const response = await fetch(
       `https://spotify-app-backend-yqzt.onrender.com/api/stream-track`,
       {
@@ -33,19 +34,33 @@ const handleDownloadTrack = async (track: TrackItem) => {
       }
     );
     
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const errorText = await response.text();
+      throw new Error(`Download failed: ${response.status}`);
+    }
     
     const blob = await response.blob();
+    
+    if (blob.size === 0) {
+      throw new Error("Empty file received");
+    }
+    
+    // Create download
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
     link.download = `${track.artists[0].name} - ${track.name}.mp3`;
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
     window.URL.revokeObjectURL(url);
     
+    console.log(`Download completed: ${track.name}`);
     return true;
   } catch (error) {
     console.error("Download failed:", error);
+    alert(`Download failed: ${track.artists[0].name} - ${track.name}\nThis track may not be available on supported music platforms.`);
     return false;
   }
 };
